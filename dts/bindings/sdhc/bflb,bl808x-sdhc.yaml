@@ -1,0 +1,27 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: Bouffalo Lab BL808 SD Host Controller
+
+compatible: "bflb,bl808x-sdhc"
+
+include: [sdhc.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  clocks:
+    required: true
+
+  bus-width:
+    type: int
+    default: 4
+    description: |
+      Data bus width. 1 for 1-bit, 4 for 4-bit.
+    enum:
+      - 1
+      - 4

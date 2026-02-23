@@ -1,0 +1,17 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: Bouffalo Labs F32K clock (selects between rc32k and xtal32k)
+
+compatible: "bflb,f32k"
+
+include: [base.yaml, clock-controller.yaml]
+
+properties:
+  clocks:
+    type: phandle-array
+    required: true
+    description: Source clock (rc32k or xtal32k)
+
+  "#clock-cells":
+    const: 0

@@ -19,6 +19,14 @@
 /* XCLK is Crystal, main clock is PLL */
 #define BFLB_MAIN_CLOCK_PLL_XTAL  3
 
+/*
+ * Overflow-safe PLL frequency scaling.
+ * Computes (_value * _top / _base) using 64-bit intermediate to avoid overflow.
+ * Used to scale PLL SDM values proportionally when top_frequency differs from base.
+ */
+#define BFLB_MUL_CLK(_value, _top, _base) \
+	(uint32_t)((uint64_t)(_value) * (_top) / (_base))
+
 /* Function that busy waits for a few cycles */
 static inline void clock_bflb_settle(void)
 {

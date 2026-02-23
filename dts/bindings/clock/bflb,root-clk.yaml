@@ -1,0 +1,29 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Generic Bouffalo Labs Root Clock
+  Represents both FCLK and HCLK, which should be kept the same.
+  Source -> FCLK / divider -> HCLK / divider -> BCLK
+
+  'clocks' take the form of:
+  clocks = <&clk_wifipll PLL_ID>;
+  Where the phandle is one of clk_wifipll, clk_aupll, clk_crystal, or clk_rc32m.
+
+compatible: "bflb,root-clk"
+
+include: [base.yaml, clock-controller.yaml]
+
+properties:
+  clocks:
+    type: phandle-array
+    required: true
+    description: source
+
+  divider:
+    type: int
+    required: true
+    description: Divide source clock by this 8-bits value (FCLK divider). Typically 1.
+
+  "#clock-cells":
+    const: 0

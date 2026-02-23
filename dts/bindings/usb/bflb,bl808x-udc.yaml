@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: Bouffalo Lab BL808x USB 2.0 device controller (Full-Speed)
+
+compatible: "bflb,bl808x-udc"
+
+include: [usb-controller.yaml]
+
+properties:
+  reg:
+    required: true
+    description: USB controller registers
+
+  interrupts:
+    required: true

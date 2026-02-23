@@ -1,0 +1,25 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: Generic Bouffalo Labs PLL
+
+compatible: "bflb,pll"
+
+include: [base.yaml, clock-controller.yaml]
+
+properties:
+  clocks:
+    type: phandle-array
+    required: true
+    description: PLL reference clock source
+
+  top-frequency:
+    type: int
+    required: true
+    description: Maximum VCO output frequency in Hz
+
+  "#clock-cells":
+    const: 1
+
+clock-cells:
+  - select

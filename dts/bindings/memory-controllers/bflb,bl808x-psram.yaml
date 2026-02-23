@@ -1,0 +1,19 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: BL808x pseudo-static RAM controller
+
+compatible: "bflb,bl808x-psram"
+
+include: base.yaml
+
+properties:
+  clock-divider:
+    type: int
+    required: true
+    enum:
+      - 1
+      - 2
+      - 3
+      - 4
+    description: Divide PLL div1 (WIFIPLL 320M or AUPLL) by this to PSRAM clock

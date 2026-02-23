@@ -73,6 +73,8 @@ zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_BEE clock_control_bee.c)
 zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_BEETLE beetle_clock_control.c)
 zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_BOUFFALOLAB_BL60X clock_control_bl60x.c)
 zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_BOUFFALOLAB_BL61X clock_control_bl61x.c)
+zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_BOUFFALOLAB_BL808X clock_control_bl808x.c
+                             clock_control_bl808x_pll.c)
 zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_BOUFFALOLAB_BL70X clock_control_bl70x.c)
 zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_ESP32 clock_control_esp32.c)
 zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_FIXED_RATE_CLOCK clock_control_fixed_rate.c)

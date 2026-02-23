@@ -14,6 +14,8 @@
 
 #if defined(CONFIG_SOC_SERIES_BL61X)
 #include <zephyr/dt-bindings/pinctrl/bl61x-pinctrl.h>
+#elif defined(CONFIG_SOC_SERIES_BL808X)
+#include <zephyr/dt-bindings/pinctrl/bl808x-pinctrl.h>
 #else
 #error "Unsupported Platform"
 #endif

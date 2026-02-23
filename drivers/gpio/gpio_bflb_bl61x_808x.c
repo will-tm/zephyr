@@ -4,17 +4,26 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#define DT_DRV_COMPAT bflb_bl61x_gpio
+#define DT_DRV_COMPAT bflb_bl61x_808x_gpio
 
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/irq.h>
 #include <zephyr/dt-bindings/pinctrl/bflb-common-pinctrl.h>
-#include <zephyr/dt-bindings/pinctrl/bl61x-pinctrl.h>
 #include <zephyr/drivers/gpio/gpio_utils.h>
 
+#if defined(CONFIG_SOC_SERIES_BL61X)
+#include <zephyr/dt-bindings/pinctrl/bl61x-pinctrl.h>
 #include <bouffalolab/bl61x/bflb_soc.h>
 #include <bouffalolab/bl61x/glb_reg.h>
 #include <bouffalolab/bl61x/hbn_reg.h>
+#elif defined(CONFIG_SOC_SERIES_BL808X)
+#include <zephyr/dt-bindings/pinctrl/bl808x-pinctrl.h>
+#include <bouffalolab/bl808x/bflb_soc.h>
+#include <bouffalolab/bl808x/glb_reg.h>
+#include <bouffalolab/bl808x/hbn_reg.h>
+#else
+#error Unsupported platform
+#endif
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(gpio_bflb_bl61x);

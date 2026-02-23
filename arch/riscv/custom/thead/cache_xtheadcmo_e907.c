@@ -42,13 +42,16 @@ void arch_dcache_enable(void)
 	__asm__ volatile (
 		"fence\n"
 		"fence.i\n"
-		/* th.dcache.iall */
-		".insn 0x20000B\n"
+		/* th.dcache.ciall — clean+invalidate to flush any dirty lines
+		 * left by the bootloader before reconfiguring the cache.
+		 */
+		".insn 0x30000B\n"
 	);
 	__asm__ volatile(
 		"csrr %0, " THEAD_MHCR
 		: "=r"(tmp));
-	tmp |= (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4);
+	/* DE | WB | WA | RS | BPE | L0BTB */
+	tmp |= (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 12);
 	__asm__ volatile(
 		"csrw " THEAD_MHCR ", %0"
 		:
@@ -90,8 +93,8 @@ void arch_dcache_disable(void)
 	__asm__ volatile (
 		"fence\n"
 		"fence.i\n"
-		/* th.dcache.iall */
-		".insn 0x20000B\n"
+		/* th.dcache.ciall — clean+invalidate to flush dirty lines */
+		".insn 0x30000B\n"
 	);
 	__asm__ volatile(
 		"csrr %0, " THEAD_MHCR

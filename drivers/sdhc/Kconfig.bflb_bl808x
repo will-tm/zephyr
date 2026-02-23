@@ -1,0 +1,12 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config SDHC_BFLB_BL808X
+	bool "Bouffalo Lab BL808 SDHC driver"
+	default y
+	depends on DT_HAS_BFLB_BL808X_SDHC_ENABLED
+	select SDHC_SUPPORTS_NATIVE_MODE
+	select PINCTRL
+	help
+	  Enable the Bouffalo Lab BL808 SD Host Controller driver.
+	  This is a polling-based PIO driver for initial bring-up.

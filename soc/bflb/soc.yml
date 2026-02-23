@@ -25,4 +25,8 @@ family:
     - name: bl706c10q2i
     - name: bl706s10q2i
     - name: bl706c22q2i
+  - name: bl808x
+    socs:
+    - name: bl808c09q2i
+    - name: bl808d09q2i
 vendor: bflb
