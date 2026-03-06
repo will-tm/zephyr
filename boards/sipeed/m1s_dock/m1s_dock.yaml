@@ -25,3 +25,4 @@ supported:
   - entropy
   - spi
   - watchdog
+  - crypto

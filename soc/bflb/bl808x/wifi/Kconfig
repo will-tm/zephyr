@@ -1,0 +1,12 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config WIFI_BL808X
+	bool "BL808 WiFi host driver support"
+	default y
+	depends on WIFI_BFLB
+	select DYNAMIC_INTERRUPTS
+	help
+	  Enable the BL808 WiFi host driver layer (OS adapter, IPC,
+	  utilities). This is selected automatically when the WiFi
+	  driver is enabled.

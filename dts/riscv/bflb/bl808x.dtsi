@@ -423,6 +423,14 @@
 			zephyr,memory-region = "MM_VRAM";
 		};
 
+		wifi0: wifi@24b00000 {
+			compatible = "bflb,bl808x-wifi";
+			reg = <0x24b00000 0x1000>;
+			interrupts = <70 1>;
+			interrupt-parent = <&clic>;
+			status = "disabled";
+		};
+
 		mtimer: timer@e000bff8 {
 			compatible = "riscv,machine-timer";
 			reg = <0xe000bff8 0x8 0xe0004000 0x8>;

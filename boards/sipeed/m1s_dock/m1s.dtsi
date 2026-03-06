@@ -75,7 +75,19 @@
 	status = "okay";
 };
 
+&sec_eng_aes {
+	status = "okay";
+};
+
+&sec_eng_sha {
+	status = "okay";
+};
+
 &sec_eng_trng {
+	status = "okay";
+};
+
+&wifi0 {
 	status = "okay";
 };
 

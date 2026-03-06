@@ -18,3 +18,5 @@ config SOC_SERIES_BL808X
 	select CPU_XUANTIE_E907
 	select CACHE_MANAGEMENT
 
+rsource "wifi/Kconfig"
+

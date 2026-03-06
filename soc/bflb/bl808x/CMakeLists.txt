@@ -18,3 +18,5 @@ zephyr_code_relocate_ifdef(CONFIG_PINCTRL_BFLB LIBRARY drivers__pinctrl LOCATION
 zephyr_code_relocate_ifdef(CONFIG_SYSCON_BFLB_EFUSE LIBRARY drivers__syscon LOCATION ITCM NOKEEP)
 zephyr_code_relocate_ifdef(CONFIG_SOC_FLASH_BFLB FILES ${ZEPHYR_BASE}/drivers/flash/flash_bflb.c
   LOCATION ITCM NOKEEP)
+
+add_subdirectory_ifdef(CONFIG_WIFI_BL808X wifi)

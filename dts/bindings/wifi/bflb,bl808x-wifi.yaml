@@ -1,0 +1,16 @@
+# Copyright The Zephyr Project Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+description: Bouffalo Lab BL808 WiFi controller
+
+compatible: "bflb,bl808x-wifi"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
