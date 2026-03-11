@@ -355,12 +355,12 @@
 		};
 
 		usb0: usb@20072000 {
-			compatible = "bflb,bl808x-udc";
+			compatible = "bflb,udc-2";
 			reg = <0x20072000 0x400>;
 			maximum-speed = "high-speed";
 			status = "disabled";
 
-			interrupts = <37 1>;
+			interrupts = <37 8>;
 			interrupt-parent = <&clic>;
 		};
 

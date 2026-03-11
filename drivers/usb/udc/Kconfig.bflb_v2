@@ -1,0 +1,31 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config UDC_BFLB_V2
+	bool "Bouffalo Lab USB V2 device controller driver"
+	default y
+	depends on DT_HAS_BFLB_UDC_2_ENABLED
+	select EVENTS
+	select UDC_DRIVER_HAS_HIGH_SPEED_SUPPORT
+	help
+	  USB 2.0 device controller driver for Bouffalo Lab SoCs
+	  with the USB V2 peripheral (FOTG210-like).
+	  Supports high-speed operation and exposes EP0 plus
+	  four shared DMA-backed data endpoints.
+
+if UDC_BFLB_V2
+
+config UDC_BFLB_V2_STACK_SIZE
+	int "USB V2 UDC driver internal thread stack size"
+	default 1024
+
+config UDC_BFLB_V2_THREAD_PRIORITY
+	int "USB V2 UDC driver internal thread priority"
+	default 8
+
+config UDC_BFLB_V2_EVENT_COUNT
+	int "Number of blocks in event slab"
+	range 8 32
+	default 16
+
+endif # UDC_BFLB_V2

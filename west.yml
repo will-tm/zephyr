@@ -164,8 +164,9 @@ manifest:
       groups:
         - hal
     - name: hal_bouffalolab
+      url: https://github.com/will-tm/hal_bouffalolab.git
       path: modules/hal/bouffalolab
-      revision: 6236ecf4224ffb5fe1e3542c0380db951bb14540
+      revision: feature/bl808-support
       groups:
         - hal
     - name: hal_espressif
