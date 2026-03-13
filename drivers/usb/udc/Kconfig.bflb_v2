@@ -28,4 +28,12 @@ config UDC_BFLB_V2_EVENT_COUNT
 	range 8 32
 	default 16
 
+config UDC_BFLB_V2_FIFO_BIDIR
+	bool "Use bidirectional FIFOs (one FIFO per endpoint)"
+	default n
+	help
+	  Use one FIFO per endpoint in bidirectional mode, supporting
+	  up to 4 data endpoints. When disabled, each direction gets
+	  its own FIFO, limiting the controller to 2 data endpoints.
+
 endif # UDC_BFLB_V2
