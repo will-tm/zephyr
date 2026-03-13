@@ -68,3 +68,10 @@
 &sec_eng_trng {
 	status = "okay";
 };
+
+zephyr_udc0: &usb0 {
+	status = "okay";
+
+	pinctrl-0 = <&usb_default>;
+	pinctrl-names = "default";
+};
