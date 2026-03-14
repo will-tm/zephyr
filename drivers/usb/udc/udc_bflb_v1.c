@@ -43,6 +43,14 @@ LOG_MODULE_REGISTER(udc_bflb_v1, CONFIG_UDC_DRIVER_LOG_LEVEL);
 /* EP0 maximum packet size (USB FS control endpoint) */
 #define BFLB_EP0_MPS 64U
 
+/* USB 2.0 §7.1.7.7: device drives resume K-state for 1–15ms.
+ * BL70x cr_res_width unit is 2.67µs per the RM.
+ */
+#define BFLB_RES_TICK_NS     2670U
+#define BFLB_RES_DURATION_US 4000U
+#define BFLB_RES_WIDTH       (BFLB_RES_DURATION_US * 1000U / BFLB_RES_TICK_NS)
+#define BFLB_RES_WAIT_MS     5U
+
 /* Events for ISR-to-thread communication */
 #define UDC_BFLB_V1_EVT_SETUP   BIT(0)
 #define UDC_BFLB_V1_EVT_XFER    BIT(1)
@@ -861,7 +869,13 @@ static void reinit_ep0(const struct device *dev)
 	regval &= ~USB_CR_USB_ROM_DCT_EN;
 	sys_write32(regval, base + USB_CONFIG_OFFSET);
 
-	/* Enable base interrupts: reset, setup done, EP0 in/out done, REND */
+	/* Enable base interrupts: reset, setup done, EP0 in/out done, REND.
+	 * SOF_3MS (suspend detection) is NOT enabled here — it is enabled
+	 * by the thread after the first bus reset, per USB 2.0 §7.1.7.6:
+	 * suspend detection only applies after the device is in Default
+	 * state.  Enabling it earlier causes spurious suspend events
+	 * during initial connection before the host starts sending SOF.
+	 */
 	regval = 0;
 	regval |= USB_CR_USB_RESET_EN;
 	regval |= USB_CR_EP0_SETUP_DONE_EN;
@@ -1082,11 +1096,54 @@ static void udc_bflb_v1_isr(const struct device *dev)
 	}
 	sys_write32(sts, base + USB_INT_CLEAR_OFFSET);
 
-	if (IS_ENABLED(CONFIG_UDC_ENABLE_SOF) && (sts & USB_SOF_INT)) {
-		udc_submit_sof_event(dev);
+	if (sts & USB_SOF_INT) {
+		if (udc_is_suspended(dev)) {
+			/* SOF received while suspended = host resumed bus.
+			 * Re-enable SOF_3MS for next suspend detection and
+			 * disable SOF (unless upper layer needs it).
+			 */
+			udc_set_suspended(dev, false);
+			udc_submit_event(dev, UDC_EVT_RESUME, 0);
+			sys_set_bits(base + USB_INT_EN_OFFSET,
+				     USB_CR_SOF_3MS_EN);
+			sys_clear_bits(base + USB_INT_MASK_OFFSET,
+				       USB_CR_SOF_3MS_MASK);
+			if (!IS_ENABLED(CONFIG_UDC_ENABLE_SOF)) {
+				sys_clear_bits(base + USB_INT_EN_OFFSET,
+					       USB_CR_SOF_EN);
+				sys_set_bits(base + USB_INT_MASK_OFFSET,
+					     USB_CR_SOF_MASK);
+			}
+		}
+		if (IS_ENABLED(CONFIG_UDC_ENABLE_SOF)) {
+			udc_submit_sof_event(dev);
+		}
+	}
+
+	if (sts & USB_SOF_3MS_INT) {
+		/* No SOF for 3ms = USB bus idle = host suspended.
+		 * Disable SOF_3MS to prevent retriggering while
+		 * suspended, and enable SOF for resume detection.
+		 */
+		udc_set_suspended(dev, true);
+		udc_submit_event(dev, UDC_EVT_SUSPEND, 0);
+		sys_clear_bits(base + USB_INT_EN_OFFSET, USB_CR_SOF_3MS_EN);
+		sys_set_bits(base + USB_INT_MASK_OFFSET, USB_CR_SOF_3MS_MASK);
+		sys_set_bits(base + USB_INT_EN_OFFSET, USB_CR_SOF_EN);
+		sys_clear_bits(base + USB_INT_MASK_OFFSET, USB_CR_SOF_MASK);
 	}
 
 	if (sts & USB_RESET_INT) {
+		if (udc_is_suspended(dev)) {
+			udc_set_suspended(dev, false);
+			udc_submit_event(dev, UDC_EVT_RESUME, 0);
+		}
+		/* Disable suspend detection until reinit_ep0 completes
+		 * in the thread.  The thread re-enables SOF_3MS after
+		 * reinit to prevent spurious suspends during reset.
+		 */
+		sys_clear_bits(base + USB_INT_EN_OFFSET, USB_CR_SOF_3MS_EN);
+		sys_set_bits(base + USB_INT_MASK_OFFSET, USB_CR_SOF_3MS_MASK);
 		k_event_post(&priv->events, UDC_BFLB_V1_EVT_RESET);
 	}
 
@@ -1277,8 +1334,19 @@ static void bflb_thread_handler(void *p)
 	 */
 	do {
 		if (evt & UDC_BFLB_V1_EVT_RESET) {
+			const struct udc_bflb_v1_config *const config =
+				dev->config;
+
 			LOG_DBG("Bus reset");
 			reinit_ep0(dev);
+			/* Enable suspend detection now that bus is active.
+			 * Not done in reinit_ep0() to avoid spurious
+			 * suspends during initial connection.
+			 */
+			sys_set_bits(config->base + USB_INT_EN_OFFSET,
+				     USB_CR_SOF_3MS_EN);
+			sys_clear_bits(config->base + USB_INT_MASK_OFFSET,
+				       USB_CR_SOF_3MS_MASK);
 			udc_submit_event(dev, UDC_EVT_RESET, 0);
 		}
 
@@ -1556,9 +1624,26 @@ static int udc_bflb_v1_set_address(const struct device *dev, const uint8_t addr)
 
 static int udc_bflb_v1_host_wakeup(const struct device *dev)
 {
-	/* TODO: Implement remote wakeup signaling via USB XCVR registers */
-	LOG_DBG("Remote wakeup");
-	return -ENOTSUP;
+	const struct udc_bflb_v1_config *const config = dev->config;
+	const mm_reg_t base = config->base;
+	uint32_t regval;
+
+	/* Configure resume K-state duration */
+	regval = sys_read32(base + USB_RESUME_CONFIG_OFFSET);
+	regval &= ~USB_CR_RES_WIDTH_MASK;
+	regval |= (BFLB_RES_WIDTH << USB_CR_RES_WIDTH_SHIFT);
+	sys_write32(regval, base + USB_RESUME_CONFIG_OFFSET);
+
+	/* Trigger resume signaling — hardware drives K-state automatically */
+	sys_set_bits(base + USB_RESUME_CONFIG_OFFSET, USB_CR_RES_TRIG);
+
+	/* Wait for resume signaling to complete */
+	k_sleep(K_MSEC(BFLB_RES_WAIT_MS));
+
+	udc_set_suspended(dev, false);
+	udc_submit_event(dev, UDC_EVT_RESUME, 0);
+
+	return 0;
 }
 
 static enum udc_bus_speed udc_bflb_v1_device_speed(const struct device *dev)
@@ -1701,7 +1786,7 @@ static int udc_bflb_v1_driver_preinit(const struct device *dev)
 	atomic_clear(&priv->xfer_new);
 	atomic_clear(&priv->xfer_finished);
 
-	data->caps.rwup = false;
+	data->caps.rwup = true;
 	data->caps.addr_before_status = true;
 	data->caps.mps0 = UDC_MPS0_64;
 
