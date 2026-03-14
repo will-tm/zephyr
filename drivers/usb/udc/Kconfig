@@ -84,6 +84,6 @@ source "drivers/usb/udc/Kconfig.ambiq"
 source "drivers/usb/udc/Kconfig.renesas_ra"
 source "drivers/usb/udc/Kconfig.max32"
 source "drivers/usb/udc/Kconfig.sam0"
-source "drivers/usb/udc/Kconfig.bflb_v2"
+source "drivers/usb/udc/Kconfig.bflb"
 
 endif # UDC_DRIVER
