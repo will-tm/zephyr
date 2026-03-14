@@ -99,6 +99,12 @@ struct udc_bflb_v2_data {
 	bool setup_received;
 	/* Timepoint until which speed register reads are deferred */
 	k_timepoint_t reset_expiration;
+	/* Per-FIFO original VDMA request length for OUT stall detection */
+	uint32_t out_vdma_len[USB_BFLB_V2_NUM_DATA_FIFOS + 1];
+	/* Device pointer for stall detection work item */
+	const struct device *dev;
+	/* Delayed work for detecting stalled OUT VDMA (short packets) */
+	struct k_work_delayable out_stall_work;
 };
 
 /* Work queue event types for deferred USB processing */
@@ -328,6 +334,15 @@ static void udc_bflb_v2_vdma_stop(const struct device *const dev,
 	tmp = sys_read32(cfg->base + USB_VDMA_F0PS1_OFFSET + fifo_off);
 	tmp &= ~USB_VDMA_START_CXF;
 	sys_write32(tmp, cfg->base + USB_VDMA_F0PS1_OFFSET + fifo_off);
+}
+
+static uint32_t udc_bflb_v2_fifo_byte_count(const struct device *const dev,
+					       const uint8_t fifo_idx)
+{
+	const struct udc_bflb_v2_config *const cfg = dev->config;
+
+	return sys_read32(cfg->base + USB_DEV_FIBC0_OFFSET +
+			  4U * (fifo_idx - 1U)) & USB_BC_F0_MASK;
 }
 
 static void udc_bflb_v2_fifo_reset(const struct device *const dev,
@@ -797,8 +812,16 @@ static void udc_bflb_v2_ep_dout_start(const struct device *const dev,
 		chunk = net_buf_tailroom(buf);
 
 		priv->ep_is_in[ep_idx] = false;
+		priv->out_vdma_len[fifo] = chunk;
 		udc_bflb_v2_vdma_startread(
 			dev, fifo, buf->data + buf->len, chunk);
+
+		/* Schedule stall detection for short packets whose size
+		 * is a multiple of the 16-byte DMA burst.  The VDMA
+		 * auto-completes for sub-burst transfers but stalls
+		 * when the FIFO empties on a burst boundary.
+		 */
+		k_work_reschedule(&priv->out_stall_work, K_USEC(500));
 	}
 }
 
@@ -828,18 +851,6 @@ static void udc_bflb_v2_ep_din_start(const struct device *const dev,
 		chunk = MIN(buf->len, udc_mps_ep_size(ep_cfg));
 
 		priv->ep_is_in[ep_idx] = true;
-
-		/*
-		 * If no bulk OUT data has been received on this endpoint
-		 * index since the last ep_enable, zero the IN buffer.
-		 * This implements USB source/sink pattern-0 behavior:
-		 * after SET_INTERFACE resets the endpoint, the first IN
-		 * transfer returns all zeros until the host sends real
-		 * data via the paired OUT endpoint.
-		 */
-		if (!priv->ep_out_received[ep_idx]) {
-			memset(buf->data, 0, chunk);
-		}
 
 		/*
 		 * Reset the FIFO, start VDMA to load data, then spin-wait
@@ -1165,6 +1176,69 @@ static void udc_bflb_v2_work_handler(struct k_work *item)
 	}
 
 	k_mem_slab_free(&udc_bflb_v2_ev_slab, (void *)ev);
+}
+
+/*
+ * OUT VDMA stall detection — runs from a delayed work item.
+ *
+ * The VDMA engine uses 16-byte DMA bursts.  When an OUT short packet
+ * whose size is a multiple of 16 is received, the VDMA transfers the
+ * data but does not auto-complete because the last burst was full.
+ * Detect this condition by checking for FIFOs where VDMA has partially
+ * transferred data but the FIFO is empty (no more data incoming).
+ */
+static void udc_bflb_v2_out_stall_handler(struct k_work *work)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+	struct udc_bflb_v2_data *priv =
+		CONTAINER_OF(dwork, struct udc_bflb_v2_data, out_stall_work);
+	const struct device *dev = priv->dev;
+	bool reschedule = false;
+
+	for (uint8_t i = 1U; i <= USB_BFLB_V2_NUM_DATA_FIFOS; i++) {
+		uint32_t remaining;
+		uint32_t fifo_bc;
+		uint8_t ep_idx;
+
+		if (!priv->fifo_active[i] || priv->ep_is_in[udc_bflb_v2_fifo_to_ep(dev, i)]) {
+			continue; /* FIFO not active or is IN direction */
+		}
+
+		remaining = udc_bflb_v2_ep_vdma_remaining(dev, i);
+		if (remaining == priv->out_vdma_len[i]) {
+			/* No data transferred yet — VDMA is waiting for
+			 * the first packet.  Keep polling.
+			 */
+			reschedule = true;
+			continue;
+		}
+
+		if (remaining == 0) {
+			/* Full transfer completed — G3 will handle it */
+			continue;
+		}
+
+		/* Some data was transferred but VDMA didn't complete.
+		 * Check if the FIFO is empty (short packet fully read).
+		 */
+		fifo_bc = udc_bflb_v2_fifo_byte_count(dev, i);
+		if (fifo_bc == 0) {
+			/* Stalled: short packet data is in memory but VDMA
+			 * is waiting for more.  Complete the transfer.
+			 */
+			ep_idx = udc_bflb_v2_fifo_to_ep(dev, i);
+			udc_bflb_v2_ev_submit(
+				dev, USB_EP_DIR_OUT | ep_idx,
+				UDC_BFLB_V2_EVT_END, K_NO_WAIT);
+		} else {
+			/* FIFO still has data — VDMA is actively reading */
+			reschedule = true;
+		}
+	}
+
+	if (reschedule) {
+		k_work_reschedule(&priv->out_stall_work, K_USEC(500));
+	}
 }
 
 static void udc_bflb_v2_ev_submit(const struct device *const dev,
@@ -1851,6 +1925,12 @@ static int udc_bflb_v2_init(const struct device *const dev)
 	}
 
 	cfg->irq_enable_func(dev);
+
+	struct udc_bflb_v2_data *priv = udc_get_private(dev);
+
+	priv->dev = dev;
+	k_work_init_delayable(&priv->out_stall_work,
+			      udc_bflb_v2_out_stall_handler);
 
 	LOG_INF("Initialized");
 
