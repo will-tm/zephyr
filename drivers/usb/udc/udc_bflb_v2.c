@@ -80,6 +80,8 @@ struct udc_bflb_v2_data {
 	bool ep_is_in[USB_BFLB_V2_NUM_BIDIR_EPS];
 	/* BID FIFO serialization: true when a VDMA is in-flight (1-indexed) */
 	bool fifo_active[USB_BFLB_V2_NUM_DATA_FIFOS + 1];
+	/* Last OUT VDMA programmed length per FIFO (1-indexed) */
+	uint32_t out_vdma_len[USB_BFLB_V2_NUM_DATA_FIFOS + 1];
 	/* Setup packet received, pending processing in work queue */
 	bool setup_received;
 	/* Timepoint until which speed register reads are deferred */
@@ -388,6 +390,12 @@ static void udc_bflb_v2_fifo_setep(const struct device *const dev,
 	sys_write32(tmp, cfg->base + USB_DEV_FMAP_OFFSET);
 }
 
+/* Convert a cacheable address to its uncacheable mirror.
+ * On BL808 T-Head C906, bit 25 controls cacheability:
+ * 0x22xxxxxx (cached) → 0x20xxxxxx (uncached).
+ */
+#define VDMA_UNCACHED_ADDR(addr) ((uint32_t)(addr) & ~BIT(25))
+
 static void udc_bflb_v2_vdma_startread(const struct device *const dev,
 				       const uint8_t fifo_idx,
 				       uint8_t *const buf,
@@ -411,7 +419,12 @@ static void udc_bflb_v2_vdma_startread(const struct device *const dev,
 	tmp |= (len << USB_VDMA_LEN_CXF_SHIFT);
 	sys_write32(tmp, cfg->base + USB_VDMA_F0PS1_OFFSET + fifo_off);
 
-	sys_write32((uint32_t)buf, cfg->base + USB_VDMA_F0PS2_OFFSET + fifo_off);
+	/* Use uncacheable address so VDMA writes bypass the D-cache.
+	 * This avoids the race where the CPU re-fills a cache line
+	 * between the pre-transfer invalidation and the DMA completion.
+	 */
+	sys_write32(VDMA_UNCACHED_ADDR(buf),
+		    cfg->base + USB_VDMA_F0PS2_OFFSET + fifo_off);
 
 	tmp = sys_read32(cfg->base + USB_VDMA_F0PS1_OFFSET + fifo_off);
 	tmp |= USB_VDMA_START_CXF;
@@ -719,10 +732,11 @@ static void udc_bflb_v2_ep_dout_start(const struct device *const dev,
 				      struct udc_ep_config *const ep_cfg)
 {
 	struct udc_bflb_v2_data *const priv = udc_get_private(dev);
+	const struct udc_bflb_v2_config *const cfg = dev->config;
 	struct net_buf *buf;
 	uint8_t ep_idx = USB_EP_GET_IDX(ep_cfg->addr);
 	uint8_t fifo;
-	uint32_t chunk;
+	uint32_t tmp;
 
 	if (priv->ep_is_in[ep_idx]) {
 		LOG_ERR("Unexpected ep 0x%02x dout token", ep_cfg->addr);
@@ -734,10 +748,21 @@ static void udc_bflb_v2_ep_dout_start(const struct device *const dev,
 		udc_submit_event(dev, UDC_EVT_ERROR, -ENOBUFS);
 	} else {
 		fifo = udc_bflb_v2_ep_to_fifo(ep_cfg);
-		chunk = net_buf_tailroom(buf);
 
 		priv->ep_is_in[ep_idx] = false;
-		udc_bflb_v2_vdma_startread(dev, fifo, buf->data + buf->len, chunk);
+
+		/* Don't start VDMA yet — just arm the G1 OUT/SPK
+		 * interrupts so we know when data arrives in the FIFO.
+		 * The VDMA will be started from the ISR after the
+		 * FIFO byte count is known, avoiding the hardware
+		 * blind spot where VDMA doesn't auto-complete for
+		 * packets between 16 and MPS-1 bytes.
+		 */
+		sys_write32((3U << (2U * (fifo - 1U))),
+			    cfg->base + USB_DEV_ISG1_OFFSET);
+		tmp = sys_read32(cfg->base + USB_DEV_MISG1_OFFSET);
+		tmp &= ~(3U << (2U * (fifo - 1U)));
+		sys_write32(tmp, cfg->base + USB_DEV_MISG1_OFFSET);
 	}
 }
 
@@ -812,9 +837,22 @@ static void udc_bflb_v2_out_chunk_done(const struct device *dev, struct udc_ep_c
 		return;
 	}
 
+	struct udc_bflb_v2_data *const priv = udc_get_private(dev);
+
+	__asm__ volatile("fence iorw, iorw" ::: "memory");
+
 	remain = udc_bflb_v2_ep_remain(dev, fifo);
-	chunk = net_buf_tailroom(buf);
+	/* Use the actual VDMA programmed length, not the buffer
+	 * tailroom — the VDMA may have been started for fewer
+	 * bytes than the buffer can hold (FIFO-first approach).
+	 */
+	chunk = priv->out_vdma_len[fifo];
+	if (chunk == 0U) {
+		chunk = net_buf_tailroom(buf);
+	}
 	received = chunk - remain;
+
+	sys_cache_data_invd_range(buf->data + buf->len, received);
 
 	net_buf_add(buf, received);
 
@@ -1874,6 +1912,49 @@ static void udc_bflb_v2_isr(const struct device *const dev)
 				udc_bflb_v2_ev_submit(dev, USB_EP_DIR_IN | ep_idx,
 						      UDC_BFLB_V2_EVT_END, K_NO_WAIT);
 			}
+
+			/*
+			 * G1 OUT/SPK_INT: data has arrived in a FIFO.
+			 * Start VDMA for the exact FIFO byte count so
+			 * the transfer completes via G3 without hitting
+			 * the hardware blind spot (16..MPS-1 bytes).
+			 */
+			for (i = 1U; i <= USB_BFLB_V2_NUM_DATA_FIFOS; i++) {
+				uint32_t fibc;
+				struct udc_ep_config *out_cfg;
+				struct net_buf *out_buf;
+
+				if (!(group_intstatus & (3U << (2U * (i - 1U))))) {
+					continue;
+				}
+
+				/* Re-mask OUT and SPK for this FIFO */
+				tmp = sys_read32(cfg->base + USB_DEV_MISG1_OFFSET);
+				tmp |= (3U << (2U * (i - 1U)));
+				sys_write32(tmp, cfg->base + USB_DEV_MISG1_OFFSET);
+
+				/* Read FIFO byte count */
+				fibc = sys_read32(cfg->base + USB_DEV_FIBC0_OFFSET
+						  + 4U * (i - 1U));
+				fibc &= 0x7FFU; /* byte count in bits [10:0] */
+
+				ep_idx = udc_bflb_v2_fifo_to_ep(dev, i);
+				out_cfg = udc_get_ep_cfg(dev,
+							 USB_EP_DIR_OUT | ep_idx);
+				if (out_cfg == NULL) {
+					continue;
+				}
+				out_buf = udc_buf_peek(out_cfg);
+				if (out_buf == NULL || fibc == 0U) {
+					continue;
+				}
+
+				/* Start VDMA for exactly the bytes in FIFO */
+				priv->out_vdma_len[i] = fibc;
+				udc_bflb_v2_vdma_startread(dev, i,
+					out_buf->data + out_buf->len,
+					fibc);
+			}
 		}
 		if (dev_intstatus & USB_INT_G2) {
 			group_intstatus = sys_read32(cfg->base + USB_DEV_ISG2_OFFSET);
@@ -2046,10 +2127,15 @@ static void udc_bflb_v2_isr(const struct device *const dev)
 				 * polling VDMA completion.  Nothing to
 				 * do here.
 				 * For OUT, G3 means data is in memory.
+				 * Stop the VDMA engine before submitting
+				 * the completion event so the remain count
+				 * register is stable when the work handler
+				 * reads it.
 				 */
 				if (dir == USB_EP_DIR_IN) {
 					continue;
 				}
+				udc_bflb_v2_vdma_stop(dev, i);
 				udc_bflb_v2_ev_submit(dev, dir | ep_idx, UDC_BFLB_V2_EVT_END,
 						      K_NO_WAIT);
 			}
