@@ -160,7 +160,12 @@ static uint8_t udc_bflb_v2_fifo_to_ep(const struct device *const dev, const uint
 		return 2U;
 	}
 
-	return fifo;
+	/* EP1: F1(OUT)+F2(IN), EP2: F3(BID), EP3: F4(BID) */
+	if (fifo <= 2U) {
+		return 1U;
+	}
+
+	return fifo - 1U;
 #else
 	if (udc_bflb_v2_fifo_is_double(dev, fifo)) {
 		return 1U;
@@ -504,7 +509,15 @@ static uint8_t udc_bflb_v2_ep_to_fifo(struct udc_ep_config *const ep_cfg)
 		}
 	}
 
-	return ep_idx;
+	/* EP1 gets dedicated per-direction FIFOs (F1=OUT, F2=IN)
+	 * to avoid BID contention on the bulk endpoint.
+	 * EP2→F3, EP3→F4 use BID (shared) FIFOs.
+	 */
+	if (ep_idx == 1) {
+		return USB_EP_DIR_IS_OUT(ep_cfg->addr) ? 1U : 2U;
+	}
+
+	return ep_idx + 1U;
 #else
 	if (ep_cfg->mps > USB_BFLB_V2_HSFIFOCAP) {
 		if (USB_EP_DIR_IS_OUT(ep_cfg->addr)) {
@@ -975,14 +988,15 @@ static void udc_bflb_v2_fifo_kick_next(const struct device *dev,
 
 	if (first_cfg != NULL && udc_buf_peek(first_cfg) != NULL &&
 		!udc_ep_is_busy(first_cfg)) {
-		//udc_bflb_v2_work_handler_xfer(dev, first_cfg);
 		udc_bflb_v2_ev_submit(dev, first_cfg->addr, UDC_BFLB_V2_EVT_XFER, K_NO_WAIT);
-		return;
+		/* For BID FIFOs, only one direction at a time */
+		if (ep_idx > 1U) {
+			return;
+		}
 	}
 
 	if (second_cfg != NULL && udc_buf_peek(second_cfg) != NULL &&
 		!udc_ep_is_busy(second_cfg)) {
-		//udc_bflb_v2_work_handler_xfer(dev, second_cfg);
 		udc_bflb_v2_ev_submit(dev, second_cfg->addr, UDC_BFLB_V2_EVT_XFER, K_NO_WAIT);
 		return;
 	}
@@ -1196,11 +1210,27 @@ static int udc_bflb_v2_ep_enable(const struct device *const dev,
 			udc_bflb_v2_fifo_configure(dev, 3, config, 1, true);
 			udc_bflb_v2_fifo_configure(dev, 4, config, 1, false);
 		}
+	} else if (ep_idx == 1) {
+		/* EP1 gets dedicated per-direction FIFOs (F1=OUT, F2=IN)
+		 * to avoid BID contention on the bulk endpoint.
+		 */
+		fifo = udc_bflb_v2_ep_to_fifo(config);
+
+		if (USB_EP_DIR_IS_OUT(config->addr)) {
+			udc_bflb_v2_ep_setfifo(dev, ep_idx, fifo, USB_BFLB_V2_EP_DIR_OUT);
+		} else {
+			udc_bflb_v2_ep_setfifo(dev, ep_idx, fifo, USB_BFLB_V2_EP_DIR_IN);
+		}
+		udc_bflb_v2_fifo_setep(dev, ep_idx, fifo, USB_BFLB_V2_FIFO_DIR_BID);
+		udc_bflb_v2_fifo_configure(dev, fifo, config, 1, true);
 	} else {
-		udc_bflb_v2_ep_setfifo(dev, ep_idx, ep_idx, USB_BFLB_V2_EP_DIR_IN);
-		udc_bflb_v2_ep_setfifo(dev, ep_idx, ep_idx, USB_BFLB_V2_EP_DIR_OUT);
-		udc_bflb_v2_fifo_setep(dev, ep_idx, ep_idx, USB_BFLB_V2_FIFO_DIR_BID);
-		udc_bflb_v2_fifo_configure(dev, ep_idx, config, 1, true);
+		/* EP2+ use BID FIFOs: EP2→F3, EP3→F4 */
+		fifo = udc_bflb_v2_ep_to_fifo(config);
+
+		udc_bflb_v2_ep_setfifo(dev, ep_idx, fifo, USB_BFLB_V2_EP_DIR_IN);
+		udc_bflb_v2_ep_setfifo(dev, ep_idx, fifo, USB_BFLB_V2_EP_DIR_OUT);
+		udc_bflb_v2_fifo_setep(dev, ep_idx, fifo, USB_BFLB_V2_FIFO_DIR_BID);
+		udc_bflb_v2_fifo_configure(dev, fifo, config, 1, true);
 	}
 #else
 	if (config->mps > USB_BFLB_V2_HSFIFOCAP) {
@@ -1993,8 +2023,18 @@ static void udc_bflb_v2_isr(const struct device *const dev)
 				}
 				ep_idx = udc_bflb_v2_fifo_to_ep(dev, i);
 #if CONFIG_UDC_BFLB_V2_FIFO_BIDIR
-				dir = priv->ep_is_in[ep_idx] ? USB_EP_DIR_IN
-								: USB_EP_DIR_OUT;
+				/* EP1 has separate FIFOs (F1=OUT, F2=IN),
+				 * derive direction from FIFO index.
+				 * EP2+: BID FIFOs, use ep_is_in.
+				 */
+				if (ep_idx == 1U) {
+					dir = (i == 1U) ? USB_EP_DIR_OUT
+							: USB_EP_DIR_IN;
+				} else {
+					dir = priv->ep_is_in[ep_idx]
+						? USB_EP_DIR_IN
+						: USB_EP_DIR_OUT;
+				}
 #else
 				dir = (i & 1U) ? USB_EP_DIR_OUT : USB_EP_DIR_IN;
 #endif
