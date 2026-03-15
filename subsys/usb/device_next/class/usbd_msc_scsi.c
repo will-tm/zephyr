@@ -330,6 +330,12 @@ static int update_disk_info(struct scsi_ctx *const ctx)
 {
 	int status = disk_access_status(ctx->disk);
 
+	if (status == DISK_STATUS_UNINIT || status == DISK_STATUS_NOMEDIA) {
+		if (disk_access_init(ctx->disk) == 0) {
+			status = disk_access_status(ctx->disk);
+		}
+	}
+
 	if (disk_access_ioctl(ctx->disk, DISK_IOCTL_GET_SECTOR_COUNT, &ctx->sector_count) != 0) {
 		ctx->sector_count = 0;
 		status = -EIO;
