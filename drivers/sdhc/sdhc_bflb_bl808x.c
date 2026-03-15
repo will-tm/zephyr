@@ -81,6 +81,7 @@ static inline void glb_write32(uint32_t offset, uint32_t val)
 struct sdhc_bflb_config {
 	uintptr_t base;
 	const struct pinctrl_dev_config *pcfg;
+	void (*irq_config_func)(void);
 	uint8_t bus_width;
 };
 
@@ -88,7 +89,38 @@ struct sdhc_bflb_data {
 	struct sdhc_host_props props;
 	struct sdhc_io host_io;
 	struct k_mutex lock;
+	struct k_sem irq_sem;
+	volatile uint16_t irq_status;
+	volatile uint16_t irq_err;
 };
+
+static void sdhc_bflb_isr(const struct device *dev)
+{
+	const struct sdhc_bflb_config *cfg = dev->config;
+	struct sdhc_bflb_data *data = dev->data;
+	uintptr_t base = cfg->base;
+	uint16_t status, err;
+
+	status = sdh_read16(base, SDH_SD_NORMAL_INT_STATUS_OFFSET);
+	err = sdh_read16(base, SDH_SD_ERROR_INT_STATUS_OFFSET);
+
+	/* Clear handled bits (W1C) */
+	if (status & (BIT(SDH_CMD_COMPLETE_POS) | BIT(SDH_XFER_COMPLETE_POS))) {
+		sdh_write16(base, SDH_SD_NORMAL_INT_STATUS_OFFSET,
+			    status & (BIT(SDH_CMD_COMPLETE_POS) | BIT(SDH_XFER_COMPLETE_POS)));
+	}
+	if (err) {
+		sdh_write16(base, SDH_SD_ERROR_INT_STATUS_OFFSET, err);
+	}
+
+	data->irq_status |= status;
+	data->irq_err |= err;
+
+	if (status & (BIT(SDH_CMD_COMPLETE_POS) | BIT(SDH_XFER_COMPLETE_POS) |
+		      BIT(SDH_ERR_INT_POS))) {
+		k_sem_give(&data->irq_sem);
+	}
+}
 
 static void sdhc_bflb_enable_clock_gate(void)
 {
@@ -212,8 +244,15 @@ static void sdhc_bflb_enable_status_bits(uintptr_t base)
 	status_en |= (uint32_t)0x03FF << 16; /* error: all 10 error bits */
 	sys_write32(status_en, base + SDH_SD_NORMAL_INT_STATUS_EN_OFFSET);
 
-	/* Disable all interrupt signal enables (polling only, no IRQs) */
-	sys_write32(0, base + SDH_SD_NORMAL_INT_STATUS_INT_EN_OFFSET);
+	/* Enable interrupt signals for CMD_COMPLETE, XFER_COMPLETE,
+	 * and all error bits so the ISR fires on completion.
+	 */
+	{
+		uint32_t int_en = BIT(SDH_CMD_COMPLETE_POS) | BIT(SDH_XFER_COMPLETE_POS);
+
+		int_en |= (uint32_t)0x03FF << 16; /* error interrupt signals */
+		sys_write32(int_en, base + SDH_SD_NORMAL_INT_STATUS_INT_EN_OFFSET);
+	}
 }
 
 static void sdhc_bflb_configure_vendor_regs(uintptr_t base)
@@ -431,26 +470,18 @@ static uint8_t sdhc_bflb_encode_cmd_lo(struct sdhc_command *cmd)
 	return val;
 }
 
-static int sdhc_bflb_wait_for(uintptr_t base, uint16_t status_offset, uint16_t mask, int timeout_ms)
+static int sdhc_bflb_wait_irq(struct sdhc_bflb_data *data, uint16_t mask, int timeout_ms)
 {
-	int64_t deadline;
-	uint16_t err;
-
-	deadline = k_uptime_get() + timeout_ms;
-	for (;;) {
-		if (sdh_read16(base, status_offset) & mask) {
-			return 0;
-		}
-		/* Check error status */
-		err = sdh_read16(base, SDH_SD_ERROR_INT_STATUS_OFFSET);
-		if (err) {
+	while (!(data->irq_status & mask)) {
+		if (data->irq_err) {
 			return -EIO;
 		}
-		if (k_uptime_get() > deadline) {
+		if (k_sem_take(&data->irq_sem, K_MSEC(timeout_ms)) != 0) {
 			return -ETIMEDOUT;
 		}
-		k_busy_wait(10);
 	}
+
+	return 0;
 }
 
 static void sdhc_bflb_read_response(uintptr_t base, struct sdhc_command *cmd)
@@ -658,11 +689,12 @@ static int sdhc_bflb_request(const struct device *dev, struct sdhc_command *cmd,
 		}
 	}
 
-	/* Clear pending status (matches lhal bflb_sdh_sta_clr pattern:
-	 * clear CMD_COMP + XFER_COMP in normal, all error bits via 32-bit write)
-	 */
+	/* Clear pending status and reset IRQ state */
 	sys_write32((0xFFFFU << 16) | BIT(SDH_CMD_COMPLETE_POS) | BIT(SDH_XFER_COMPLETE_POS),
 		    base + SDH_SD_NORMAL_INT_STATUS_OFFSET);
+	data->irq_status = 0;
+	data->irq_err = 0;
+	k_sem_reset(&data->irq_sem);
 
 	/* ---- Phase 1: cmd_cfg (lhal bflb_sdh_cmd_cfg) ----
 	 * Write argument, then configure CMD register lower byte (0x0E)
@@ -735,10 +767,9 @@ static int sdhc_bflb_request(const struct device *dev, struct sdhc_command *cmd,
 	sdh_write8(base, SDH_SD_CMD_OFFSET + 1, cmd->opcode);
 
 	/* Wait for command complete */
-	ret = sdhc_bflb_wait_for(base, SDH_SD_NORMAL_INT_STATUS_OFFSET, BIT(SDH_CMD_COMPLETE_POS),
-				 CMD_TIMEOUT_MS);
+	ret = sdhc_bflb_wait_irq(data, BIT(SDH_CMD_COMPLETE_POS), CMD_TIMEOUT_MS);
 	if (ret) {
-		err = sdh_read16(base, SDH_SD_ERROR_INT_STATUS_OFFSET);
+		err = data->irq_err;
 		if (err & BIT(SDH_CMD_TIMEOUT_ERR_POS)) {
 			LOG_DBG("CMD%d timeout", cmd->opcode);
 			ret = -ETIMEDOUT;
@@ -746,17 +777,13 @@ static int sdhc_bflb_request(const struct device *dev, struct sdhc_command *cmd,
 			LOG_ERR("CMD%d error: 0x%04x", cmd->opcode, err);
 			ret = -EIO;
 		}
-		/* Reset CMD line on error */
 		sdhc_bflb_sw_reset(base, BIT(SDH_SW_RST_CMD_POS));
 		if (has_data) {
 			sdhc_bflb_sw_reset(base, BIT(SDH_SW_RST_DAT_POS));
 		}
-		sdh_write16(base, SDH_SD_ERROR_INT_STATUS_OFFSET, 0xFFFF);
 		k_mutex_unlock(&data->lock);
 		return ret;
 	}
-	/* Clear command complete */
-	sdh_write16(base, SDH_SD_NORMAL_INT_STATUS_OFFSET, BIT(SDH_CMD_COMPLETE_POS));
 
 	/* Read response */
 	sdhc_bflb_read_response(base, cmd);
@@ -764,17 +791,13 @@ static int sdhc_bflb_request(const struct device *dev, struct sdhc_command *cmd,
 	/* Data transfer phase — ADMA2 handles the entire transfer */
 	if (has_data) {
 		/* Wait for transfer complete (ADMA2 runs autonomously) */
-		ret = sdhc_bflb_wait_for(base, SDH_SD_NORMAL_INT_STATUS_OFFSET,
-					 BIT(SDH_XFER_COMPLETE_POS), DATA_TIMEOUT_MS);
+		ret = sdhc_bflb_wait_irq(data, BIT(SDH_XFER_COMPLETE_POS), DATA_TIMEOUT_MS);
 		if (ret) {
-			err = sdh_read16(base, SDH_SD_ERROR_INT_STATUS_OFFSET);
-			LOG_ERR("Xfer complete timeout/error: 0x%04x", err);
+			LOG_ERR("Xfer complete timeout/error: 0x%04x", data->irq_err);
 			sdhc_bflb_sw_reset(base, BIT(SDH_SW_RST_DAT_POS));
-			sdh_write16(base, SDH_SD_ERROR_INT_STATUS_OFFSET, 0xFFFF);
 			k_mutex_unlock(&data->lock);
 			return ret;
 		}
-		sdh_write16(base, SDH_SD_NORMAL_INT_STATUS_OFFSET, BIT(SDH_XFER_COMPLETE_POS));
 
 		if (is_read) {
 			sys_cache_data_invd_range(sdhc_data->data,
@@ -839,6 +862,7 @@ static int sdhc_bflb_init(const struct device *dev)
 	int ret;
 
 	k_mutex_init(&data->lock);
+	k_sem_init(&data->irq_sem, 0, 1);
 
 	/* Match SDK sdh_host_init() + bflb_sdh_init() order exactly:
 	 * Board-level: GLB_Set_SDH_CLK → PERIPHERAL_CLOCK_SDH_ENABLE →
@@ -889,8 +913,11 @@ static int sdhc_bflb_init(const struct device *dev)
 	/* Step 7: Configure vendor-specific registers (CLK_BURST_SETUP + TX_CFG) */
 	sdhc_bflb_configure_vendor_regs(base);
 
-	/* Step 8: Enable status bits for polling (32-bit write) */
+	/* Step 8: Enable status bits and interrupt signals */
 	sdhc_bflb_enable_status_bits(base);
+
+	/* Step 8b: Connect and enable IRQ */
+	cfg->irq_config_func();
 
 	/* Step 9: Set data timeout to maximum */
 	sdhc_bflb_set_timeout_max(base);
@@ -909,11 +936,21 @@ static int sdhc_bflb_init(const struct device *dev)
 	return 0;
 }
 
+#define SDHC_BFLB_IRQ_CONFIG(n)                                                                    \
+	static void sdhc_bflb_irq_config_##n(void)                                                 \
+	{                                                                                          \
+		IRQ_CONNECT(DT_INST_IRQN(n), DT_INST_IRQ(n, priority),                            \
+			    sdhc_bflb_isr, DEVICE_DT_INST_GET(n), 0);                             \
+		irq_enable(DT_INST_IRQN(n));                                                       \
+	}
+
 #define SDHC_BFLB_INIT(n)                                                                          \
 	PINCTRL_DT_INST_DEFINE(n);                                                                 \
+	SDHC_BFLB_IRQ_CONFIG(n)                                                                    \
 	static const struct sdhc_bflb_config sdhc_bflb_config_##n = {                              \
 		.base = DT_INST_REG_ADDR(n),                                                       \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),                                         \
+		.irq_config_func = sdhc_bflb_irq_config_##n,                                      \
 		.bus_width = DT_INST_PROP_OR(n, bus_width, 4),                                     \
 	};                                                                                         \
 	static struct sdhc_bflb_data sdhc_bflb_data_##n;                                           \
