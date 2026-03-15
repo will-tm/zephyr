@@ -164,7 +164,11 @@ static uint8_t udc_bflb_v2_fifo_to_ep(const struct device *const dev, const uint
 		return 2U;
 	}
 
-	return fifo;
+	/* EP1 uses F1(OUT)/F2(IN), EP2+ uses F(idx+1) */
+	if (fifo <= 2U) {
+		return 1U;
+	}
+	return fifo - 1U;
 #else
 	if (udc_bflb_v2_fifo_is_double(dev, fifo)) {
 		return 1U;
@@ -196,6 +200,26 @@ static void udc_bflb_v2_ep_ack(const struct device *const dev, const uint8_t ep_
 	tmp |= USB_TX0BYTE_IEP1;
 	sys_write32(tmp, cfg->base + USB_DEV_INMPS1_OFFSET
 		    + (ep_idx - 1U) * USB_BFLB_V2_XPS_X_OFFSET);
+}
+
+static void udc_bflb_v2_fifo_enable(const struct device *const dev, const uint8_t fifo_idx)
+{
+	const struct udc_bflb_v2_config *const cfg = dev->config;
+	uint32_t tmp;
+
+	tmp = sys_read32(cfg->base + USB_DEV_FCFG_OFFSET);
+	tmp |= (USB_EN_F0 << ((fifo_idx - 1U) * USB_BFLB_V2_FX_X_OFFSET));
+	sys_write32(tmp, cfg->base + USB_DEV_FCFG_OFFSET);
+}
+
+static void udc_bflb_v2_fifo_disable(const struct device *const dev, const uint8_t fifo_idx)
+{
+	const struct udc_bflb_v2_config *const cfg = dev->config;
+	uint32_t tmp;
+
+	tmp = sys_read32(cfg->base + USB_DEV_FCFG_OFFSET);
+	tmp &= ~(USB_EN_F0 << ((fifo_idx - 1U) * USB_BFLB_V2_FX_X_OFFSET));
+	sys_write32(tmp, cfg->base + USB_DEV_FCFG_OFFSET);
 }
 
 static void udc_bflb_v2_fifo_configure(const struct device *const dev,
@@ -312,15 +336,17 @@ static void udc_bflb_v2_vdma_stop(const struct device *const dev, const uint8_t 
 static void udc_bflb_v2_fifo_reset(const struct device *const dev, const uint8_t fifo_idx)
 {
 	const struct udc_bflb_v2_config *const cfg = dev->config;
-	uint32_t tmp;
 
 	__ASSERT_NO_MSG(fifo_idx > 0 && fifo_idx <= USB_BFLB_V2_NUM_DATA_FIFOS);
 
-	tmp = sys_read32(cfg->base + USB_DMA_TFN_OFFSET);
-
-	tmp = sys_read32(cfg->base + USB_DEV_FIBC0_OFFSET + 4U * (fifo_idx - 1U));
-	tmp |= USB_FFRST0_HOV;
-	sys_write32(tmp, cfg->base + USB_DEV_FIBC0_OFFSET + 4U * (fifo_idx - 1U));
+	/* Write ONLY the FFRST bit with the byte-count field zeroed.
+	 * The old code did a read-modify-write that preserved the stale
+	 * byte count; if the hardware re-loads BC from the written value
+	 * after the reset completes, the USB engine sees a non-empty FIFO
+	 * and sends stale/zero data on the next IN token.
+	 */
+	sys_write32(USB_FFRST0_HOV,
+		    cfg->base + USB_DEV_FIBC0_OFFSET + 4U * (fifo_idx - 1U));
 }
 
 /*
@@ -396,6 +422,7 @@ static void udc_bflb_v2_vdma_startread(const struct device *const dev,
 	tmp &= ~USB_VDMA_IO_CXF;
 	tmp &= ~USB_VDMA_TYPE_CXF;
 	tmp &= ~USB_VDMA_START_CXF;
+	tmp &= ~(1U << 3); /* Clear abort bit left by vdma_stop */
 	tmp |= (len << USB_VDMA_LEN_CXF_SHIFT);
 	sys_write32(tmp, cfg->base + USB_VDMA_F0PS1_OFFSET + fifo_off);
 
@@ -422,6 +449,7 @@ static bool udc_bflb_v2_vdma_startwrite(const struct device *const dev,
 	tmp &= ~USB_VDMA_IO_CXF;
 	tmp |= USB_VDMA_TYPE_CXF;
 	tmp &= ~USB_VDMA_START_CXF;
+	tmp &= ~(1U << 3); /* Clear abort bit left by vdma_stop */
 	tmp |= (len << USB_VDMA_LEN_CXF_SHIFT);
 	sys_write32(tmp, cfg->base + USB_VDMA_F0PS1_OFFSET + fifo_off);
 
@@ -504,7 +532,20 @@ static uint8_t udc_bflb_v2_ep_to_fifo(struct udc_ep_config *const ep_cfg)
 		}
 	}
 
-	return ep_idx;
+	/* EP1 gets separate FIFOs per direction (F1=OUT, F2=IN)
+	 * to avoid the BID FIFO partial-read race where the host
+	 * reads a partially-loaded FIFO during VDMA.
+	 * EP2+ share a single FIFO in BID mode.
+	 */
+	if (ep_idx == 1) {
+		if (USB_EP_DIR_IS_OUT(ep_cfg->addr)) {
+			return 1U;
+		} else {
+			return 2U;
+		}
+	}
+
+	return ep_idx + 1U;
 #else
 	if (ep_cfg->mps > USB_BFLB_V2_HSFIFOCAP) {
 		if (USB_EP_DIR_IS_OUT(ep_cfg->addr)) {
@@ -763,12 +804,14 @@ static void udc_bflb_v2_ep_din_start(const struct device *const dev,
 		fifo = udc_bflb_v2_ep_to_fifo(ep_cfg);
 		chunk = MIN(buf->len, udc_mps_ep_size(ep_cfg));
 
-		/* Clean up potential stale irq, start VDMA to load data, then check
-		 * for immediate VDMA completion before unmasking G1 IN_INT.
+		/* Clear stale G1 IN_INT, start VDMA to load data,
+		 * then unmask G1 IN_INT so we get notified when
+		 * the host reads it.
 		 */
 		sys_write32(1U << (15U + fifo), cfg->base + USB_DEV_ISG1_OFFSET);
 		if (udc_bflb_v2_vdma_startwrite(dev, fifo, buf->data, chunk)) {
-			udc_bflb_v2_ev_submit(dev, ep_cfg->addr, UDC_BFLB_V2_EVT_END, K_NO_WAIT);
+			udc_bflb_v2_ev_submit(dev, ep_cfg->addr,
+					      UDC_BFLB_V2_EVT_END, K_NO_WAIT);
 		} else {
 			tmp = sys_read32(cfg->base + USB_DEV_MISG1_OFFSET);
 			tmp &= ~(1U << (15U + fifo));
@@ -862,8 +905,8 @@ static void udc_bflb_v2_work_handler_xfer(const struct device *const dev,
 #ifdef CONFIG_UDC_BFLB_V2_FIFO_BIDIR
 	const struct udc_bflb_v2_config *const cfg = dev->config;
 	uint32_t remain, tmp;
-	uint8_t in_addr;
-	struct udc_ep_config *in_cfg;
+	uint8_t other_addr;
+	struct udc_ep_config *other_cfg;
 #endif
 
 	if (ep_idx == 0) {
@@ -899,23 +942,44 @@ static void udc_bflb_v2_work_handler_xfer(const struct device *const dev,
 		if (USB_EP_DIR_IS_OUT(ep_cfg->addr) && priv->ep_is_in[ep_idx]) {
 			remain = udc_bflb_v2_ep_remain(dev, fifo);
 			/* BID FIFO: OUT evicts IN */
-			in_addr = USB_EP_DIR_IN | ep_idx;
-			in_cfg = udc_get_ep_cfg(dev, in_addr);
+			other_addr = USB_EP_DIR_IN | ep_idx;
+			other_cfg = udc_get_ep_cfg(dev, other_addr);
 
-			LOG_WRN("FIFO %u: evicting IN ep 0x%02x for OUT", fifo, in_addr);
+			LOG_WRN("FIFO %u: evicting IN ep 0x%02x for OUT", fifo, other_addr);
 			udc_bflb_v2_vdma_stop(dev, fifo);
 			udc_bflb_v2_fifo_reset(dev, fifo);
 			priv->fifo_active[fifo] = false;
 
 			tmp = sys_read32(cfg->base + USB_DEV_MISG1_OFFSET);
+			tmp |= (1U << (15U + fifo));
+			sys_write32(tmp, cfg->base + USB_DEV_MISG1_OFFSET);
+
+			if (other_cfg != NULL && udc_ep_is_busy(other_cfg)) {
+				udc_ep_set_busy(other_cfg, false);
+				if (remain > 0) {
+					udc_bflb_v2_ev_submit(dev, other_addr,
+							      UDC_BFLB_V2_EVT_XFER, K_NO_WAIT);
+				}
+			}
+		} else if (USB_EP_DIR_IS_IN(ep_cfg->addr) && !priv->ep_is_in[ep_idx]) {
+			/* BID FIFO: IN preempts idle OUT.  OUT only armed
+			 * G1 OUT/SPK (no VDMA running), so just mask the
+			 * OUT interrupt and release the FIFO for IN use.
+			 * The normal IN start path below will reset the
+			 * FIFO since the direction is switching.
+			 */
+			other_addr = USB_EP_DIR_OUT | ep_idx;
+			other_cfg = udc_get_ep_cfg(dev, other_addr);
+
+			/* Mask G1 OUT/SPK to prevent ISR interference */
+			tmp = sys_read32(cfg->base + USB_DEV_MISG1_OFFSET);
 			tmp |= (3U << (2U * (fifo - 1U)));
 			sys_write32(tmp, cfg->base + USB_DEV_MISG1_OFFSET);
 
-			if (in_cfg != NULL && udc_ep_is_busy(in_cfg)) {
-				udc_ep_set_busy(in_cfg, false);
-				if (remain > 0) {
-					udc_bflb_v2_ev_submit(dev, in_addr, UDC_BFLB_V2_EVT_XFER, K_NO_WAIT);
-				}
+			priv->fifo_active[fifo] = false;
+
+			if (other_cfg != NULL && udc_ep_is_busy(other_cfg)) {
+				udc_ep_set_busy(other_cfg, false);
 			}
 		} else {
 			return;
@@ -924,13 +988,23 @@ static void udc_bflb_v2_work_handler_xfer(const struct device *const dev,
 		return;
 #endif
 	}
-	priv->fifo_active[fifo] = true;
 
 	if (USB_EP_DIR_IS_OUT(ep_cfg->addr)) {
+		/* OUT arming: set fifo_active so IN cannot preempt
+		 * once G1 OUT/SPK is unmasked. The FIFO-first approach
+		 * means no VDMA runs until data arrives from the host,
+		 * but we still claim the FIFO to serialize access.
+		 */
+		priv->fifo_active[fifo] = true;
+		if (priv->ep_is_in[ep_idx]) {
+			/* Switching IN→OUT: clear stale IN data */
+			udc_bflb_v2_fifo_reset(dev, fifo);
+		}
 		priv->ep_is_in[ep_idx] = false;
 		udc_ep_set_busy(ep_cfg, true);
 		udc_bflb_v2_ep_dout_start(dev, ep_cfg);
 	} else {
+		priv->fifo_active[fifo] = true;
 		if (!priv->ep_is_in[ep_idx]) {
 			udc_bflb_v2_vdma_stop(dev, fifo);
 			udc_bflb_v2_fifo_reset(dev, fifo);
@@ -1207,11 +1281,25 @@ static int udc_bflb_v2_ep_enable(const struct device *const dev,
 			udc_bflb_v2_fifo_configure(dev, 3, config, 1, true);
 			udc_bflb_v2_fifo_configure(dev, 4, config, 1, false);
 		}
+	} else if (ep_idx == 1) {
+		/* EP1 uses separate FIFOs: F1=OUT, F2=IN.
+		 * This avoids the BID FIFO partial-read race.
+		 */
+		fifo = udc_bflb_v2_ep_to_fifo(config);
+		if (USB_EP_DIR_IS_OUT(config->addr)) {
+			udc_bflb_v2_ep_setfifo(dev, ep_idx, fifo, USB_BFLB_V2_EP_DIR_OUT);
+			udc_bflb_v2_fifo_setep(dev, ep_idx, fifo, USB_BFLB_V2_FIFO_DIR_OUT);
+		} else {
+			udc_bflb_v2_ep_setfifo(dev, ep_idx, fifo, USB_BFLB_V2_EP_DIR_IN);
+			udc_bflb_v2_fifo_setep(dev, ep_idx, fifo, USB_BFLB_V2_FIFO_DIR_IN);
+		}
+		udc_bflb_v2_fifo_configure(dev, fifo, config, 1, true);
 	} else {
-		udc_bflb_v2_ep_setfifo(dev, ep_idx, ep_idx, USB_BFLB_V2_EP_DIR_IN);
-		udc_bflb_v2_ep_setfifo(dev, ep_idx, ep_idx, USB_BFLB_V2_EP_DIR_OUT);
-		udc_bflb_v2_fifo_setep(dev, ep_idx, ep_idx, USB_BFLB_V2_FIFO_DIR_BID);
-		udc_bflb_v2_fifo_configure(dev, ep_idx, config, 1, true);
+		fifo = udc_bflb_v2_ep_to_fifo(config);
+		udc_bflb_v2_ep_setfifo(dev, ep_idx, fifo, USB_BFLB_V2_EP_DIR_IN);
+		udc_bflb_v2_ep_setfifo(dev, ep_idx, fifo, USB_BFLB_V2_EP_DIR_OUT);
+		udc_bflb_v2_fifo_setep(dev, ep_idx, fifo, USB_BFLB_V2_FIFO_DIR_BID);
+		udc_bflb_v2_fifo_configure(dev, fifo, config, 1, true);
 	}
 #else
 	if (config->mps > USB_BFLB_V2_HSFIFOCAP) {
@@ -1292,20 +1380,15 @@ static int udc_bflb_v2_ep_disable(const struct device *const dev,
 	priv->fifo_active[fifo] = false;
 #endif
 
-	/* Mask G1 IN_INT for any IN FIFOs associated with this endpoint */
+	/* Mask G1 interrupts for the disabled endpoint's FIFO */
+	fifo = udc_bflb_v2_ep_to_fifo(config);
+	tmp = sys_read32(cfg->base + USB_DEV_MISG1_OFFSET);
 	if (USB_EP_DIR_IS_IN(config->addr)) {
-		fifo = udc_bflb_v2_ep_to_fifo(config);
-
-		tmp = sys_read32(cfg->base + USB_DEV_MISG1_OFFSET);
 		tmp |= (1U << (15U + fifo));
-		sys_write32(tmp, cfg->base + USB_DEV_MISG1_OFFSET);
-	} else if (USB_EP_DIR_IS_OUT(config->addr)) {
-		fifo = udc_bflb_v2_ep_to_fifo(config);
-
-		tmp = sys_read32(cfg->base + USB_DEV_MISG1_OFFSET);
-		tmp &= ~(3U << (2U * (fifo - 1U)));
-		sys_write32(tmp, cfg->base + USB_DEV_MISG1_OFFSET);
+	} else {
+		tmp |= (3U << (2U * (fifo - 1U)));
 	}
+	sys_write32(tmp, cfg->base + USB_DEV_MISG1_OFFSET);
 
 	/* Clear the busy flag so the endpoint can be re-used after
 	 * a SET_INTERFACE disable/enable cycle without getting stuck
@@ -2073,21 +2156,10 @@ static void udc_bflb_v2_isr(const struct device *const dev)
 				dir = (i & 1U) ? USB_EP_DIR_OUT : USB_EP_DIR_IN;
 #endif
 
-				/*
-				 * For IN, G3 just confirms VDMA finished;
-				 * G1 IN_INT was already unmasked
-				 * synchronously in ep_din_start after
-				 * polling VDMA completion.  Nothing to
-				 * do here.
-				 * For OUT, G3 means data is in memory.
-				 * Stop the VDMA engine before submitting
-				 * the completion event so the remain count
-				 * register is stable when the work handler
-				 * reads it.
-				 */
 				if (dir == USB_EP_DIR_IN) {
 					continue;
 				}
+				/* OUT: data is now in memory */
 				udc_bflb_v2_vdma_stop(dev, i);
 				udc_bflb_v2_ev_submit(dev, dir | ep_idx, UDC_BFLB_V2_EVT_END,
 						      K_NO_WAIT);
