@@ -829,9 +829,13 @@ static void udc_bflb_v2_in_chunk_done(const struct device *dev, struct udc_ep_co
 
 	net_buf_pull(buf, sent);
 
-	/* Complete the transfer — kick_next will clean up any
-	 * residual FIFO data via vdma_stop + fifo_reset.
-	 */
+	if (buf->len > 0) {
+		/* More data in buffer — send next chunk */
+		udc_bflb_v2_ep_din_start(dev, ep_cfg);
+		return;
+	}
+
+	/* Buffer fully sent — complete the transfer */
 	buf = udc_buf_get(ep_cfg);
 	udc_ep_set_busy(ep_cfg, false);
 	udc_submit_ep_event(dev, buf, 0);
