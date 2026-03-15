@@ -67,3 +67,8 @@
 &gpio0 {
 	status = "okay";
 };
+
+zephyr_udc0: &usbd {
+	maximum-speed = "high-speed";
+	status = "okay";
+};

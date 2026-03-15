@@ -1,7 +1,9 @@
-# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+# Copyright (c) 2024-2026 MASSDRIVER EI (massdriver.space)
 # SPDX-License-Identifier: Apache-2.0
 
-description: Bouffalo Lab USB V2 device controller
+description: |
+  Bouffalolab BL61x USB controller in device mode
+  It is similar to FOTG210
 
 compatible: "bflb,udc-2"
 
@@ -10,7 +12,6 @@ include: [usb-controller.yaml]
 properties:
   reg:
     required: true
-    description: USB controller registers
 
   interrupts:
     required: true
