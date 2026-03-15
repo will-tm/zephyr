@@ -12,6 +12,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/sd/sd_spec.h>
+#include <zephyr/cache.h>
 
 #include <bflb_soc.h>
 #include <bouffalolab/bl808x/sdh_reg.h>
@@ -38,6 +39,18 @@ LOG_MODULE_REGISTER(sdhc_bflb_bl808x, CONFIG_SDHC_LOG_LEVEL);
 
 /* SD bus voltage values for host ctrl register */
 #define SD_BUS_VLT_33 0x7 /* 3.3V */
+
+/* ADMA2 descriptor attributes */
+#define ADMA2_ATTR_VALID BIT(0)
+#define ADMA2_ATTR_END   BIT(1)
+#define ADMA2_ATTR_TRAN  (2 << 4)
+
+/* ADMA2 descriptor: 8 bytes — { attr(2) | len(2) | addr(4) } */
+struct adma2_desc {
+	uint16_t attr;
+	uint16_t len; /* 0 = 65536 bytes */
+	uint32_t addr;
+} __packed;
 
 /* Helper to read/write SDH registers at various widths */
 static inline void sdh_write8(uintptr_t base, uint32_t offset, uint8_t val)
@@ -483,48 +496,25 @@ static void sdhc_bflb_read_response(uintptr_t base, struct sdhc_command *cmd)
 	}
 }
 
-static int sdhc_bflb_xfer_data_pio(uintptr_t base, struct sdhc_data *data, bool is_read)
+static void sdhc_bflb_setup_adma2(uintptr_t base, struct sdhc_data *data, bool is_read)
 {
-	uint32_t total_words;
-	uint32_t *buf = (uint32_t *)data->data;
-	int ret;
+	static struct adma2_desc desc __aligned(4);
+	uint32_t total_len = data->block_size * data->blocks;
 
-	total_words = (data->block_size * data->blocks) / 4;
-	data->bytes_xfered = 0;
+	desc.attr = ADMA2_ATTR_VALID | ADMA2_ATTR_END | ADMA2_ATTR_TRAN;
+	desc.len = (total_len >= 65536) ? 0 : (uint16_t)total_len;
+	desc.addr = (uint32_t)(uintptr_t)data->data;
 
-	for (uint32_t blk = 0; blk < data->blocks; blk++) {
-		uint32_t blk_words = data->block_size / 4;
-		uint16_t status_bit =
-			is_read ? BIT(SDH_BUFFER_RD_EN_POS) : BIT(SDH_BUFFER_WR_EN_POS);
-
-		/* Wait for buffer ready */
-		ret = sdhc_bflb_wait_for(base, SDH_SD_PRESENT_STATE_1_OFFSET, status_bit,
-					 DATA_TIMEOUT_MS);
-		if (ret) {
-			LOG_ERR("Buffer not ready (blk %u, %s)", blk,
-				is_read ? "rd" : "wr");
-			return ret;
-		}
-
-		for (uint32_t i = 0; i < blk_words; i++) {
-			if (is_read) {
-				uint16_t lo = sdh_read16(base, SDH_SD_BUFFER_DATA_PORT_0_OFFSET);
-				uint16_t hi = sdh_read16(base, SDH_SD_BUFFER_DATA_PORT_1_OFFSET);
-				*buf++ = ((uint32_t)hi << 16) | lo;
-			} else {
-				uint32_t w = *buf++;
-
-				sdh_write16(base, SDH_SD_BUFFER_DATA_PORT_0_OFFSET,
-					    (uint16_t)(w & 0xFFFF));
-				sdh_write16(base, SDH_SD_BUFFER_DATA_PORT_1_OFFSET,
-					    (uint16_t)(w >> 16));
-			}
-		}
-		data->bytes_xfered += data->block_size;
+	sys_cache_data_flush_range(&desc, sizeof(desc));
+	if (!is_read) {
+		sys_cache_data_flush_range(data->data, total_len);
 	}
 
-	ARG_UNUSED(total_words);
-	return 0;
+	/* Write 32-bit descriptor table address to ADMA system address regs */
+	sdh_write16(base, SDH_SD_ADMA_SYS_ADDR_1_OFFSET,
+		    (uint16_t)((uint32_t)(uintptr_t)&desc & 0xFFFF));
+	sdh_write16(base, SDH_SD_ADMA_SYS_ADDR_2_OFFSET,
+		    (uint16_t)((uint32_t)(uintptr_t)&desc >> 16));
 }
 
 /* --- Driver API --- */
@@ -714,7 +704,7 @@ static int sdhc_bflb_request(const struct device *dev, struct sdhc_command *cmd,
 		if (sdhc_data->blocks > 0) {
 			xfer_mode |= SDH_BLK_CNT_EN_MSK;
 		}
-		/* No DMA for PIO mode */
+		xfer_mode |= SDH_DMA_EN_MSK;
 		sdh_write16(base, SDH_SD_TRANSFER_MODE_OFFSET, xfer_mode);
 
 		/* Block count and size */
@@ -730,6 +720,11 @@ static int sdhc_bflb_request(const struct device *dev, struct sdhc_command *cmd,
 		xfer_mode = sdh_read16(base, SDH_SD_TRANSFER_MODE_OFFSET);
 		xfer_mode &= ~(SDH_AUTO_CMD_EN_MSK | SDH_MULTI_BLK_SEL_MSK | SDH_DMA_EN_MSK);
 		sdh_write16(base, SDH_SD_TRANSFER_MODE_OFFSET, xfer_mode);
+	}
+
+	/* Set up ADMA2 descriptor before triggering the command */
+	if (has_data) {
+		sdhc_bflb_setup_adma2(base, sdhc_data, is_read);
 	}
 
 	/* ---- Phase 3: Trigger command (lhal bflb_sdh_tranfer_start) ----
@@ -766,16 +761,9 @@ static int sdhc_bflb_request(const struct device *dev, struct sdhc_command *cmd,
 	/* Read response */
 	sdhc_bflb_read_response(base, cmd);
 
-	/* Data transfer phase */
+	/* Data transfer phase — ADMA2 handles the entire transfer */
 	if (has_data) {
-		ret = sdhc_bflb_xfer_data_pio(base, sdhc_data, is_read);
-		if (ret) {
-			sdhc_bflb_sw_reset(base, BIT(SDH_SW_RST_DAT_POS));
-			k_mutex_unlock(&data->lock);
-			return ret;
-		}
-
-		/* Wait for transfer complete */
+		/* Wait for transfer complete (ADMA2 runs autonomously) */
 		ret = sdhc_bflb_wait_for(base, SDH_SD_NORMAL_INT_STATUS_OFFSET,
 					 BIT(SDH_XFER_COMPLETE_POS), DATA_TIMEOUT_MS);
 		if (ret) {
@@ -787,6 +775,12 @@ static int sdhc_bflb_request(const struct device *dev, struct sdhc_command *cmd,
 			return ret;
 		}
 		sdh_write16(base, SDH_SD_NORMAL_INT_STATUS_OFFSET, BIT(SDH_XFER_COMPLETE_POS));
+
+		if (is_read) {
+			sys_cache_data_invd_range(sdhc_data->data,
+						  sdhc_data->block_size * sdhc_data->blocks);
+		}
+		sdhc_data->bytes_xfered = sdhc_data->block_size * sdhc_data->blocks;
 	}
 
 	k_mutex_unlock(&data->lock);
