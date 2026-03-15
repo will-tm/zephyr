@@ -776,6 +776,7 @@ static void udc_bflb_v2_out_chunk_done(const struct device *dev, struct udc_ep_c
 	struct net_buf *buf = udc_buf_peek(ep_cfg);
 	struct udc_bflb_v2_data *const priv = udc_get_private(dev);
 	uint32_t remain, chunk, received;
+	uint32_t mps = udc_mps_ep_size(ep_cfg);
 
 	if (buf == NULL) {
 		LOG_ERR("No buf for OUT chunk ep 0x%02x", ep_cfg->addr);
@@ -798,7 +799,13 @@ static void udc_bflb_v2_out_chunk_done(const struct device *dev, struct udc_ep_c
 
 	net_buf_add(buf, received);
 
-	/* Complete the transfer — dequeue and submit to class layer */
+	/* If we got a full MPS and there's room for more, re-arm */
+	if (received == mps && net_buf_tailroom(buf) >= mps) {
+		udc_bflb_v2_ep_dout_start(dev, ep_cfg);
+		return;
+	}
+
+	/* Short packet or buffer full — complete the transfer */
 	buf = udc_buf_get(ep_cfg);
 	udc_ep_set_busy(ep_cfg, false);
 	udc_submit_ep_event(dev, buf, 0);
