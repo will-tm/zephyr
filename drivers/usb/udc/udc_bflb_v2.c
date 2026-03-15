@@ -1061,10 +1061,6 @@ static int udc_bflb_v2_ep_enqueue(const struct device *const dev,
 {
 	const uint8_t ep_idx = USB_EP_GET_IDX(config->addr);
 
-	if (udc_ep_is_busy(config)) {
-		return -EBUSY;
-	}
-
 	if (ep_idx == 0) {
 		if (USB_EP_DIR_IS_OUT(config->addr)) {
 			udc_buf_put(config, buf);
