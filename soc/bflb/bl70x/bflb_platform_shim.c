@@ -16,7 +16,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/random/random.h>
 
-LOG_MODULE_REGISTER(bt_bflb_shim, CONFIG_BT_HCI_DRIVER_LOG_LEVEL);
+LOG_MODULE_REGISTER(bflb_shim, LOG_LEVEL_INF);
 #include <stdint.h>
 #include <string.h>
 

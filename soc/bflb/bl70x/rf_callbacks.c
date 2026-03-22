@@ -10,13 +10,36 @@
 #include <zephyr/kernel.h>
 #include <stdint.h>
 
+#if defined(CONFIG_IEEE802154_BFLB)
+/* Forward declarations from bl702_rf.h */
+extern void rf_set_bz_mode(uint8_t mode);
+
+/* From bl702_phy.h */
+extern void bz_phy_set_tx_power_offset(int8_t poweroffset_zigbee[16], int8_t poweroffset_ble[4]);
+
+/* From bl_wireless shims */
+extern int bl_wireless_power_offset_get(int8_t poweroffset_zigbee[16], int8_t poweroffset_ble[4]);
+
+/* Mode constants from bl702_rf.h */
+#define MODE_BLE_ONLY 0
+#define MODE_ZB_ONLY  1
+#define MODE_BZ_COEX  2
+#endif /* CONFIG_IEEE802154_BFLB */
+
 /*
  * rf_reset_done_callback — Called after RF reset completes.
- * The SDK implementation only restarts temperature calibration here
- * (if CFG_TCAL_ENABLE). We have nothing to do.
+ * Set operating mode and apply power offsets when IEEE 802.15.4 is enabled.
  */
 void rf_reset_done_callback(void)
 {
+#if defined(CONFIG_IEEE802154_BFLB)
+	int8_t po_zigbee[16];
+	int8_t po_ble[4];
+
+	rf_set_bz_mode(MODE_ZB_ONLY);
+	bl_wireless_power_offset_get(po_zigbee, po_ble);
+	bz_phy_set_tx_power_offset(po_zigbee, po_ble);
+#endif
 }
 
 /*

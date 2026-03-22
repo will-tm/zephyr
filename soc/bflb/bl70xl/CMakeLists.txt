@@ -17,3 +17,11 @@ zephyr_code_relocate_ifdef(CONFIG_CLOCK_CONTROL_BOUFFALOLAB_BL70X_L
 zephyr_code_relocate_ifdef(CONFIG_CACHE_BFLB_L1C LIBRARY drivers__cache LOCATION ITCM NOKEEP)
 zephyr_code_relocate_ifdef(CONFIG_SOC_FLASH_BFLB FILES ${ZEPHYR_BASE}/drivers/flash/flash_bflb.c
   LOCATION ITCM NOKEEP)
+zephyr_linker_sources(NOINIT ${CMAKE_CURRENT_SOURCE_DIR}/bflb_noinit.ld)
+zephyr_linker_sources(RWDATA ${CMAKE_CURRENT_SOURCE_DIR}/bflb_rwdata.ld)
+zephyr_linker_sources(ITCM_SECTION ${CMAKE_CURRENT_SOURCE_DIR}/bflb_itcm.ld)
+
+if(CONFIG_IEEE802154_BFLB)
+  zephyr_sources(bflb_platform_shim.c rf_callbacks.c bflb_mac154.c)
+  zephyr_linker_sources(SECTIONS ${ZEPHYR_HAL_BOUFFALOLAB_MODULE_DIR}/ld/bl70xl/romdriver.ld)
+endif()

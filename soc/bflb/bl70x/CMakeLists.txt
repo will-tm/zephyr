@@ -32,9 +32,13 @@ zephyr_linker_sources(NOINIT bflb_noinit.ld)
 # ROM function addresses (PROVIDE symbols) — our shims override these
 zephyr_ld_options(-T${CMAKE_CURRENT_SOURCE_DIR}/bflb_rom_symbols.ld)
 
-if(CONFIG_BT_BFLB_BL70X)
+if(CONFIG_BT_BFLB_BL70X OR CONFIG_IEEE802154_BFLB)
   zephyr_sources(
     bflb_platform_shim.c
     rf_callbacks.c
   )
+endif()
+
+if(CONFIG_IEEE802154_BFLB)
+  zephyr_sources(bflb_mac154.c)
 endif()
