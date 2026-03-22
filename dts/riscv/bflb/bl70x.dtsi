@@ -426,5 +426,15 @@
 			compatible = "bflb,bl70x-bt-hci";
 			status = "disabled";
 		};
+
+		ieee802154: ieee802154@4c000000 {
+			compatible = "bflb,ieee802154";
+			reg = <0x4c000000 0x1000>;
+			interrupt-names = "m154", "m154-req-enh-ack";
+			status = "disabled";
+
+			interrupts = <64 0>, <63 0>;
+			interrupt-parent = <&clic>;
+		};
 	};
 };

@@ -432,6 +432,16 @@
 			reg = <0x62fc0000 DT_SIZE_K(320)>;
 		};
 
+		ieee802154: ieee802154@4c000000 {
+			compatible = "bflb,ieee802154";
+			reg = <0x4c000000 0x1000>;
+			interrupt-names = "m154", "m154-req-enh-ack";
+			status = "disabled";
+
+			interrupts = <64 1>, <63 1>;
+			interrupt-parent = <&clic>;
+		};
+
 		sram1: memory@63010000 {
 			compatible = "zephyr,memory-region", "mmio-sram";
 			reg = <0x63010000 DT_SIZE_K(160)>;
