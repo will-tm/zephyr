@@ -20,6 +20,7 @@
 		zephyr,shell-uart = &uart0;
 		zephyr,entropy = &sec_eng_trng;
 		zephyr,bt-hci = &bt_hci_bflb;
+		zephyr,ieee802154 = &ieee802154;
 	};
 
 	aliases {
@@ -79,4 +80,8 @@ zephyr_udc0: &usb0 {
 
 	pinctrl-0 = <&usb_default>;
 	pinctrl-names = "default";
+};
+
+&ieee802154 {
+	status = "okay";
 };
