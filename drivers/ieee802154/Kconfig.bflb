@@ -1,0 +1,27 @@
+# Bouffalo Lab IEEE 802.15.4 configuration options
+
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig IEEE802154_BFLB
+	bool "Bouffalo Lab IEEE 802.15.4 Driver"
+	default y
+	depends on DT_HAS_BFLB_IEEE802154_ENABLED
+	select DYNAMIC_INTERRUPTS
+
+if IEEE802154_BFLB
+
+config IEEE802154_BFLB_INIT_PRIO
+	int "Bouffalo Lab IEEE 802.15.4 initialization priority"
+	default 80
+	help
+	  Set the initialization priority number. Do not mess with it unless
+	  you know what you are doing.
+
+config IEEE802154_BFLB_RX_STACK_SIZE
+	int "Driver's internal RX thread stack size"
+	default 800
+	help
+	  This option sets the driver's stack size for its internal RX thread.
+
+endif # IEEE802154_BFLB
