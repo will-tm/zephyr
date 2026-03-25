@@ -6,6 +6,7 @@
 /dts-v1/;
 #include <nordic/nrf52840_qiaa.dtsi>
 #include "smart_badge_2019_nrf52840-pinctrl.dtsi"
+#include <zephyr/dt-bindings/input/input-event-codes.h>
 
 / {
 	model = "TE Connectivity Smart Badge 2019";
@@ -15,10 +16,153 @@
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
 		zephyr,code-partition = &slot0_partition;
+		zephyr,display = &epd;
 	};
 
 	aliases {
 		watchdog0 = &wdt0;
+		sw0 = &button0;
+		led0 = &led_green;
+		led1 = &led_blue;
+		led2 = &led_red;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_green: led_0 {
+			gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+			label = "Green LED";
+		};
+
+		led_blue: led_1 {
+			gpios = <&gpio1 15 GPIO_ACTIVE_LOW>;
+			label = "Blue LED";
+		};
+
+		led_red: led_2 {
+			gpios = <&gpio1 13 GPIO_ACTIVE_LOW>;
+			label = "Red LED";
+		};
+	};
+
+	buttons {
+		compatible = "gpio-keys";
+
+		button0: button_0 {
+			gpios = <&gpio1 6 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Button 0";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	nav_buttons {
+		compatible = "gpio-keys";
+
+		nav_up: nav_up {
+			gpios = <&gpio0 13 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Nav Up";
+			zephyr,code = <INPUT_KEY_UP>;
+		};
+
+		nav_down: nav_down {
+			gpios = <&gpio1 11 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Nav Down";
+			zephyr,code = <INPUT_KEY_DOWN>;
+		};
+
+		nav_left: nav_left {
+			gpios = <&gpio0 14 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Nav Left";
+			zephyr,code = <INPUT_KEY_LEFT>;
+		};
+
+		nav_right: nav_right {
+			gpios = <&gpio1 10 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Nav Right";
+			zephyr,code = <INPUT_KEY_RIGHT>;
+		};
+
+		nav_center: nav_center {
+			gpios = <&gpio0 15 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Nav Center";
+			zephyr,code = <INPUT_KEY_ENTER>;
+		};
+	};
+
+	/* E-ink display power control (active-low P-channel MOSFET) */
+	epd_power: epd_power {
+		compatible = "regulator-fixed";
+		regulator-name = "epd-power";
+		enable-gpios = <&gpio0 26 GPIO_ACTIVE_LOW>;
+		regulator-boot-on;
+	};
+
+	/* MIPI DBI SPI controller for e-ink display */
+	mipi_dbi_epd {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi2>;
+		dc-gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		epd: ssd16xxfb@0 {
+			compatible = "solomon,ssd1680";
+			mipi-max-frequency = <4000000>;
+			reg = <0>;
+			width = <250>;
+			height = <122>;
+			busy-gpios = <&gpio0 20 GPIO_ACTIVE_HIGH>;
+
+			tssv = <0x80>;
+
+			full {
+				sdv = [41 a8 32];
+				vcom = <0x55>;
+				border-waveform = <0x03>;
+				dummy-line = <0x30>;
+				gate-line-width = <0x0a>;
+				lut = [a0 90 50 00 00 00 00 00 00 00
+				       50 90 a0 00 00 00 00 00 00 00
+				       a0 90 50 00 00 00 00 00 00 00
+				       50 90 a0 00 00 00 00 00 00 00
+				       00 00 00 00 00 00 00 00 00 00
+				       03 03 00 00 00
+				       09 09 00 00 02
+				       03 03 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00];
+			};
+
+			partial {
+				sdv = [41 a8 32];
+				vcom = <0x26>;
+				border-waveform = <0x01>;
+				dummy-line = <0x30>;
+				gate-line-width = <0x0a>;
+				lut = [00 00 00 00 00 00 00 00 00 00
+				       80 00 00 00 00 00 00 00 00 00
+				       40 00 00 00 00 00 00 00 00 00
+				       00 00 00 00 00 00 00 00 00 00
+				       00 00 00 00 00 00 00 00 00 00
+				       0a 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00
+				       00 00 00 00 00];
+			};
+		};
 	};
 };
 
@@ -94,6 +238,38 @@
 		reg = <0x6a>;
 		irq-gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>;
 		zephyr,deferred-init;
+	};
+};
+
+/* SPI2: E-ink display */
+&spi2 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi2_default>;
+	pinctrl-1 = <&spi2_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
+};
+
+/* SPI3: External flash MX25R6435F */
+&spi3 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi3_default>;
+	pinctrl-1 = <&spi3_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio1 4 GPIO_ACTIVE_LOW>;
+
+	mx25r64: mx25r6435f@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+		jedec-id = [c2 28 17];
+		size = <67108864>;
+		has-dpd;
+		t-enter-dpd = <10000>;
+		t-exit-dpd = <35000>;
+		mxicy,mx25r-power-mode = "low-power";
 	};
 };
 
