@@ -43,8 +43,8 @@
 #define MS5637_PROM_C5_IDX      5U  /* Reference temperature | T_REF */
 #define MS5637_PROM_C6_IDX      6U  /* Temperature coefficient of temperature | TEMPSENS */
 
-/* Reset recovery time per datasheet: 2.8 ms typical */
-#define MS5637_RESET_TIME_MS    3U
+/* Reset recovery time per datasheet: 2.8 ms typical, use 20 ms for margin */
+#define MS5637_RESET_TIME_MS    20U
 
 /* ADC read byte count (24-bit result) */
 #define MS5637_ADC_READ_LEN     3U

@@ -63,7 +63,12 @@ static int ms5637_read_prom_word(const struct device *dev, uint8_t addr,
 	uint8_t buf[2];
 	int ret;
 
-	ret = i2c_burst_read_dt(&cfg->bus, addr, buf, sizeof(buf));
+	/*
+	 * MS5637 requires: START, ADDR+W, cmd, RESTART, ADDR+R, MSB, LSB, STOP.
+	 * Use i2c_write_read which generates this exact sequence.
+	 */
+	ret = i2c_write_read_dt(&cfg->bus, &addr, sizeof(addr),
+				buf, sizeof(buf));
 	if (ret < 0) {
 		return ret;
 	}
@@ -98,8 +103,10 @@ static int ms5637_convert_and_read(const struct device *dev, uint8_t conv_cmd,
 	k_msleep(delay_ms);
 
 	/* Read 24-bit ADC result */
-	ret = i2c_burst_read_dt(&cfg->bus, MS5637_CMD_READ_ADC, buf,
-				sizeof(buf));
+	uint8_t read_cmd = MS5637_CMD_READ_ADC;
+
+	ret = i2c_write_read_dt(&cfg->bus, &read_cmd, sizeof(read_cmd),
+				buf, sizeof(buf));
 	if (ret < 0) {
 		return ret;
 	}
@@ -326,19 +333,29 @@ static int ms5637_init(const struct device *dev)
 	/* Wait for reset to complete per datasheet */
 	k_msleep(MS5637_RESET_TIME_MS);
 
-	/* Read all 8 PROM words for CRC validation */
+	/* Read all 8 PROM words for CRC validation.
+	 * Some MS5637 variants do not respond to PROM[7] (0xAE);
+	 * treat it as 0x0000 if the read fails.
+	 */
 	for (uint8_t i = 0U; i < MS5637_PROM_WORD_COUNT; i++) {
 		ret = ms5637_read_prom_word(dev,
 					    MS5637_PROM_ADDR_BASE + (i * 2U),
 					    &prom[i]);
 		if (ret < 0) {
-			LOG_ERR("PROM read failed at index %u: %d", i, ret);
-			return ret;
+			if (i == MS5637_PROM_WORD_COUNT - 1U) {
+				LOG_WRN("PROM[%u] read failed, assuming 0x0000", i);
+				prom[i] = 0x0000U;
+			} else {
+				LOG_ERR("PROM read failed at index %u: %d", i, ret);
+				return ret;
+			}
 		}
+		LOG_DBG("PROM[%u] = 0x%04x", i, prom[i]);
 	}
 
-	/* Validate PROM CRC-4 */
-	if (!ms5637_prom_crc_valid(prom)) {
+	/* Validate PROM CRC-4 (skip if PROM[7] was not readable) */
+	if (prom[MS5637_PROM_WORD_COUNT - 1U] != 0x0000U &&
+	    !ms5637_prom_crc_valid(prom)) {
 		LOG_ERR("PROM CRC-4 validation failed");
 		return -EIO;
 	}
