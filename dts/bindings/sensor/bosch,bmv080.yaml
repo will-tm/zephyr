@@ -1,0 +1,32 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Bosch BMV080 particulate matter (PM) sensor.
+  The BMV080 is a photoacoustic PM sensor that measures PM1, PM2.5,
+  and PM10 mass concentrations. It communicates via I2C using 16-bit
+  register addresses with 16-bit word payloads.
+
+  The default I2C address is 0x57. Up to four addresses are selectable
+  via external strapping pins (0x57, 0x56, 0x55, 0x54).
+
+  Example:
+
+    &i2c0 {
+        bmv080@57 {
+            compatible = "bosch,bmv080";
+            reg = <0x57>;
+        };
+    };
+
+compatible: "bosch,bmv080"
+
+include: [sensor-device.yaml, i2c-device.yaml]
+
+properties:
+  reg:
+    required: true
+    description: |
+      I2C address of the BMV080 sensor.
+      Possible values: 0x54, 0x55, 0x56, 0x57.
+      Default is 0x57.

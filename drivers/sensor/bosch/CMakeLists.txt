@@ -17,4 +17,5 @@ add_subdirectory_ifdef(CONFIG_BMM350 bmm350)
 add_subdirectory_ifdef(CONFIG_BMP180 bmp180)
 add_subdirectory_ifdef(CONFIG_BMP388 bmp388)
 add_subdirectory_ifdef(CONFIG_BMP581 bmp581)
+add_subdirectory_ifdef(CONFIG_BMV080 bmv080)
 # zephyr-keep-sorted-stop

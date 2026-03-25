@@ -1,0 +1,16 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config HAS_BOSCH_BMV080_SDK
+	bool
+	default y if CPU_CORTEX_M0PLUS
+	default y if CPU_CORTEX_M4
+	default y if CPU_CORTEX_M7 && FPU
+	default y if CPU_CORTEX_M33
+	default y if RISCV
+	default y if SOC_SERIES_ESP32
+	default y if SOC_SERIES_ESP32S2
+	default y if SOC_SERIES_ESP32S3
+	help
+	  Set if the Bosch BMV080 SDK binary libraries are available
+	  for the current architecture.

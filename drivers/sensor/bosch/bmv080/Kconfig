@@ -1,0 +1,16 @@
+# BMV080 particulate matter sensor configuration
+
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig BMV080
+	bool "BMV080 particulate matter sensor"
+	default y
+	depends on DT_HAS_BOSCH_BMV080_ENABLED
+	depends on I2C
+	depends on HAS_BOSCH_BMV080_SDK
+	help
+	  Enable driver for the Bosch BMV080 particulate matter sensor.
+	  The BMV080 measures PM1, PM2.5, and PM10 mass concentrations.
+	  This driver requires the proprietary Bosch BMV080 SDK binary
+	  libraries (lib_bmv080 and lib_postProcessor).
