@@ -50,6 +50,12 @@ static int usb_composite_init(void)
 {
 	int err;
 
+	/* Initialize the flash disk so MSC SCSI can access it */
+	err = disk_access_init("NAND");
+	if (err) {
+		LOG_ERR("Flash disk init failed: %d", err);
+	}
+
 	err = usbd_add_descriptor(&badge_usbd, &badge_lang);
 	if (err) {
 		return err;
