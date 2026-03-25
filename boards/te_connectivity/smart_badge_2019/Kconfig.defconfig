@@ -1,0 +1,11 @@
+# Copyright (c) 2025 TE Connectivity
+# SPDX-License-Identifier: Apache-2.0
+
+if BOARD_SMART_BADGE_2019
+
+config HW_STACK_PROTECTION
+	default ARCH_HAS_STACK_PROTECTION
+
+source "boards/common/usb/Kconfig.cdc_acm_serial.defconfig"
+
+endif # BOARD_SMART_BADGE_2019

@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Enable MPU
+CONFIG_ARM_MPU=y
+
+# Enable GPIO
+CONFIG_GPIO=y
+
+# USB CDC ACM remote wakeup
+CONFIG_USB_DEVICE_REMOTE_WAKEUP=n

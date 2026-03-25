@@ -1,0 +1,6 @@
+board:
+  name: smart_badge_2019
+  full_name: TE Connectivity Smart Badge 2019
+  vendor: te
+  socs:
+  - name: nrf52840

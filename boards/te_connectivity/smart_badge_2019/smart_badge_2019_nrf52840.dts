@@ -1,0 +1,105 @@
+/*
+ * Copyright (c) 2025 TE Connectivity
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+#include <nordic/nrf52840_qiaa.dtsi>
+#include "smart_badge_2019_nrf52840-pinctrl.dtsi"
+
+/ {
+	model = "TE Connectivity Smart Badge 2019";
+	compatible = "te,smart-badge-2019";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+	};
+
+	aliases {
+		watchdog0 = &wdt0;
+	};
+};
+
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		boot_partition: partition@0 {
+			label = "mcuboot";
+			reg = <0x00000000 0x0000c000>;
+		};
+
+		slot0_partition: partition@c000 {
+			label = "image-0";
+			reg = <0x0000c000 0x00072000>;
+		};
+
+		slot1_partition: partition@7e000 {
+			label = "image-1";
+			reg = <0x0007e000 0x00072000>;
+		};
+
+		storage_partition: partition@f0000 {
+			label = "storage";
+			reg = <0x000f0000 0x00010000>;
+		};
+	};
+};
+
+&reg0 {
+	status = "okay";
+};
+
+&reg1 {
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&gpiote {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&i2c0 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	htu21d: htu21d@40 {
+		compatible = "meas,htu21d";
+		reg = <0x40>;
+		zephyr,deferred-init;
+	};
+
+	ms5637: ms5637@76 {
+		compatible = "meas,ms5637";
+		reg = <0x76>;
+		zephyr,deferred-init;
+	};
+
+	lsm6dsl: lsm6dsl@6a {
+		compatible = "st,lsm6dsl";
+		reg = <0x6a>;
+		irq-gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>;
+		zephyr,deferred-init;
+	};
+};
+
+zephyr_udc0: &usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+};
+
+#include <../boards/common/usb/cdc_acm_serial.dtsi>
