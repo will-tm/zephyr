@@ -90,6 +90,14 @@
 		};
 	};
 
+	/* USB MSC flash disk on external MX25R6435F */
+	msc_disk0 {
+		compatible = "zephyr,flash-disk";
+		partition = <&ext_storage_partition>;
+		disk-name = "NAND";
+		cache-size = <4096>;
+	};
+
 	/* E-ink display power control (active-low P-channel MOSFET) */
 	epd_power: epd_power {
 		compatible = "regulator-fixed";
@@ -270,6 +278,18 @@
 		t-enter-dpd = <10000>;
 		t-exit-dpd = <35000>;
 		mxicy,mx25r-power-mode = "low-power";
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			/* 8MB partition for USB MSC flash disk */
+			ext_storage_partition: partition@0 {
+				label = "ext-storage";
+				reg = <0x00000000 0x00800000>;
+			};
+		};
 	};
 };
 

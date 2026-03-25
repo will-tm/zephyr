@@ -11,6 +11,8 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gap.h>
+#include <zephyr/usb/usbd.h>
+#include <zephyr/usb/class/usbd_msc.h>
 #include <zephyr/logging/log.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,6 +23,62 @@ LOG_MODULE_REGISTER(smart_badge, LOG_LEVEL_INF);
 static const struct gpio_dt_spec led_green = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 static const struct gpio_dt_spec led_blue = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
 static const struct gpio_dt_spec led_red = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
+
+/* USB composite device: CDC ACM (shell) + MSC (flash disk) */
+USBD_DEVICE_DEFINE(badge_usbd,
+		   DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)),
+		   0x2fe3, 0x0100);
+
+USBD_DESC_LANG_DEFINE(badge_lang);
+USBD_DESC_MANUFACTURER_DEFINE(badge_mfr, "TE Connectivity");
+USBD_DESC_PRODUCT_DEFINE(badge_product, "Smart Badge 2019");
+
+USBD_DESC_CONFIG_DEFINE(badge_fs_cfg, "FS Configuration");
+
+USBD_CONFIGURATION_DEFINE(badge_fs_config, 0, 250, &badge_fs_cfg);
+
+USBD_DEFINE_MSC_LUN(nand, "NAND", "TE", "SmartBadge", "1.00");
+
+static int usb_composite_init(void)
+{
+	int err;
+
+	err = usbd_add_descriptor(&badge_usbd, &badge_lang);
+	if (err) {
+		return err;
+	}
+
+	err = usbd_add_descriptor(&badge_usbd, &badge_mfr);
+	if (err) {
+		return err;
+	}
+
+	err = usbd_add_descriptor(&badge_usbd, &badge_product);
+	if (err) {
+		return err;
+	}
+
+	err = usbd_add_configuration(&badge_usbd, USBD_SPEED_FS,
+				     &badge_fs_config);
+	if (err) {
+		return err;
+	}
+
+	err = usbd_register_all_classes(&badge_usbd, USBD_SPEED_FS, 1, NULL);
+	if (err) {
+		return err;
+	}
+
+	usbd_device_set_code_triple(&badge_usbd, USBD_SPEED_FS,
+				    USB_BCC_MISCELLANEOUS, 0x02, 0x01);
+
+	err = usbd_init(&badge_usbd);
+	if (err) {
+		return err;
+	}
+
+	return usbd_enable(&badge_usbd);
+}
 
 /* BLE */
 static const struct bt_data ad[] = {
@@ -243,6 +301,15 @@ int main(void)
 
 	/* Initialize LEDs */
 	led_init();
+
+	/* Initialize USB composite device (CDC ACM + MSC) */
+	err = usb_composite_init();
+	if (err) {
+		LOG_ERR("USB composite init failed (%d)", err);
+		led_set_error();
+	} else {
+		LOG_INF("USB composite: CDC ACM + MSC ready");
+	}
 
 	/* Start BLE */
 	err = bt_enable(NULL);
