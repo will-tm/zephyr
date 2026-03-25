@@ -14,9 +14,15 @@
 #include <zephyr/bluetooth/gap.h>
 #include <zephyr/usb/usbd.h>
 #include <zephyr/usb/class/usbd_msc.h>
+#include <zephyr/fs/fs.h>
+#include <zephyr/storage/disk_access.h>
 #include <zephyr/logging/log.h>
 #include <stdio.h>
 #include <string.h>
+
+#if CONFIG_FAT_FILESYSTEM_ELM
+#include <ff.h>
+#endif
 
 LOG_MODULE_REGISTER(smart_badge, LOG_LEVEL_INF);
 
