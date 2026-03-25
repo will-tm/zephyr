@@ -1,0 +1,22 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  TE Connectivity HTU41D digital humidity and temperature sensor.
+  Communicates via I2C at fixed address 0x40.
+
+compatible: "meas,htu41d"
+
+include: [sensor-device.yaml, i2c-device.yaml]
+
+examples:
+  - |
+    i2c {
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      htu41d@40 {
+        compatible = "meas,htu41d";
+        reg = <0x40>;
+      };
+    };
