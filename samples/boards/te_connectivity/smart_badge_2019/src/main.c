@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/display.h>
@@ -61,11 +62,13 @@ static int usb_composite_init(void)
 	err = usbd_add_configuration(&badge_usbd, USBD_SPEED_FS,
 				     &badge_fs_config);
 	if (err) {
+		LOG_ERR("USB add config failed: %d", err);
 		return err;
 	}
 
 	err = usbd_register_all_classes(&badge_usbd, USBD_SPEED_FS, 1, NULL);
 	if (err) {
+		LOG_ERR("USB register classes failed: %d", err);
 		return err;
 	}
 
@@ -74,11 +77,18 @@ static int usb_composite_init(void)
 
 	err = usbd_init(&badge_usbd);
 	if (err) {
+		LOG_ERR("USB init failed: %d", err);
 		return err;
 	}
 
-	return usbd_enable(&badge_usbd);
+	err = usbd_enable(&badge_usbd);
+	if (err) {
+		LOG_ERR("USB enable failed: %d", err);
+	}
+	return err;
 }
+
+SYS_INIT(usb_composite_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 
 /* BLE */
 static const struct bt_data ad[] = {
@@ -302,16 +312,7 @@ int main(void)
 	/* Initialize LEDs */
 	led_init();
 
-	/* Initialize USB composite device (CDC ACM + MSC) */
-	err = usb_composite_init();
-	if (err) {
-		LOG_ERR("USB composite init failed (%d)", err);
-		led_set_error();
-	} else {
-		LOG_INF("USB composite: CDC ACM + MSC ready");
-	}
-
-	/* Start BLE */
+	/* Start BLE (USB composite init handled by SYS_INIT) */
 	err = bt_enable(NULL);
 	if (err) {
 		LOG_ERR("BLE init failed (%d)", err);
