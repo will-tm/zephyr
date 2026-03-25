@@ -14,6 +14,9 @@
 #include <zephyr/bluetooth/gap.h>
 #include <zephyr/usb/usbd.h>
 #include <zephyr/usb/class/usbd_msc.h>
+#if IS_ENABLED(CONFIG_CHARACTER_FRAMEBUFFER)
+#include <zephyr/display/cfb.h>
+#endif
 #include <zephyr/fs/fs.h>
 #include <zephyr/storage/disk_access.h>
 #include <zephyr/logging/log.h>
@@ -274,46 +277,85 @@ static bool read_sensors(bool htu_ok, bool ms_ok, bool lsm_ok)
 	return any_ok;
 }
 
-/* E-ink display update */
-static void epd_update(const struct device *display)
+#if IS_ENABLED(CONFIG_CHARACTER_FRAMEBUFFER)
+/* E-ink display */
+static bool epd_initialized;
+
+static void epd_init(const struct device *display)
 {
 	if (!display || !device_is_ready(display)) {
 		return;
 	}
 
-	struct display_capabilities caps;
-	struct display_buffer_descriptor desc;
-	/* 1-bit monochrome: 250 pixels wide = 32 bytes per row */
-	static uint8_t buf[32 * 12]; /* 12 rows per text line */
-	int y = 0;
-
-	display_get_capabilities(display, &caps);
-
-	/* Blank the display */
-	desc.buf_size = sizeof(buf);
-	desc.width = caps.x_resolution;
-	desc.pitch = caps.x_resolution;
-
-	/* Write sensor text lines using simple pixel-clear approach:
-	 * For a real product, use LVGL or a font renderer.
-	 * Here we just blank and let the display show the data via LOG.
-	 */
-	memset(buf, 0xFF, sizeof(buf)); /* white */
-	desc.height = 12;
-
-	/* Write each text line as a white band — the real display content
-	 * would come from a proper graphics library. For now, just trigger
-	 * a refresh so the display is alive.
-	 */
-	for (int row = 0; row < 10 && y < (int)caps.y_resolution; row++) {
-		display_write(display, 0, y, &desc, buf);
-		y += 12;
+	if (display_set_pixel_format(display, PIXEL_FORMAT_MONO10) != 0) {
+		display_set_pixel_format(display, PIXEL_FORMAT_MONO01);
 	}
 
+	if (cfb_framebuffer_init(display)) {
+		LOG_ERR("CFB framebuffer init failed");
+		return;
+	}
+
+	cfb_framebuffer_clear(display, true);
 	display_blanking_off(display);
 
-	LOG_INF("E-ink display refreshed (sensor data on serial)");
+	/* Use the largest available font */
+	for (int idx = 0; idx < 42; idx++) {
+		uint8_t w, h;
+
+		if (cfb_get_font_size(display, idx, &w, &h)) {
+			break;
+		}
+		cfb_framebuffer_set_font(display, idx);
+	}
+
+	epd_initialized = true;
 }
+
+static void epd_update(const struct device *display)
+{
+	char line[42];
+	int row = 0;
+	uint8_t font_w, font_h;
+
+	if (!epd_initialized) {
+		return;
+	}
+
+	cfb_framebuffer_set_font(display, 0);
+	cfb_get_font_size(display, 0, &font_w, &font_h);
+
+	cfb_framebuffer_clear(display, false);
+
+	snprintf(line, sizeof(line), "%d.%d C  %d.%d %%RH",
+		 (int)(sensor_data.temp_milli / 1000),
+		 abs((int)(sensor_data.temp_milli % 1000)) / 100,
+		 (int)(sensor_data.hum_milli / 1000),
+		 abs((int)(sensor_data.hum_milli % 1000)) / 100);
+	cfb_print(display, line, 0, row * font_h);
+	row++;
+
+	snprintf(line, sizeof(line), "%d.%d kPa",
+		 (int)(sensor_data.press_milli / 1000),
+		 abs((int)(sensor_data.press_milli % 1000)) / 100);
+	cfb_print(display, line, 0, row * font_h);
+	row++;
+
+	snprintf(line, sizeof(line), "X%d.%d Y%d.%d Z%d.%d",
+		 (int)(sensor_data.accel_mg[0] / 1000),
+		 abs((int)(sensor_data.accel_mg[0] % 1000)) / 100,
+		 (int)(sensor_data.accel_mg[1] / 1000),
+		 abs((int)(sensor_data.accel_mg[1] % 1000)) / 100,
+		 (int)(sensor_data.accel_mg[2] / 1000),
+		 abs((int)(sensor_data.accel_mg[2] % 1000)) / 100);
+	cfb_print(display, line, 0, row * font_h);
+
+	cfb_framebuffer_finalize(display);
+}
+#else
+static void epd_init(const struct device *display) { }
+static void epd_update(const struct device *display) { }
+#endif /* CONFIG_CHARACTER_FRAMEBUFFER */
 
 int main(void)
 {
@@ -364,23 +406,22 @@ int main(void)
 		led_set_error();
 	}
 
-	/* Measurement loop */
-	int cycle = 0;
+	/* Initialize e-ink display (after USB is up) */
+	k_msleep(500);
+	epd_init(display);
 
+	/* Measurement loop */
 	while (1) {
 		read_sensors(htu_ok, ms_ok, lsm_ok);
+
+		/* Update e-ink with current sensor values */
+		epd_update(display);
 
 		/* Blink blue LED while advertising (not connected, no error) */
 		if (!ble_connected && !error_occurred) {
 			led_blink_blue();
 		}
 
-		/* Refresh e-ink every 6th cycle (30s) to avoid wear */
-		if (display && device_is_ready(display) && (cycle % 6) == 0) {
-			epd_update(display);
-		}
-
-		cycle++;
 		k_sleep(K_SECONDS(5));
 	}
 
