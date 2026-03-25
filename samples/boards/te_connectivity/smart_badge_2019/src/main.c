@@ -5,28 +5,114 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/display.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gap.h>
 #include <zephyr/logging/log.h>
+#include <stdio.h>
+#include <string.h>
 
 LOG_MODULE_REGISTER(smart_badge, LOG_LEVEL_INF);
 
+/* LEDs */
+static const struct gpio_dt_spec led_green = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+static const struct gpio_dt_spec led_blue = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
+static const struct gpio_dt_spec led_red = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
+
+/* BLE */
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
 	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
 		sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
 
+static bool ble_connected;
+static bool error_occurred;
+
+/* Sensors */
 static const struct device *htu21d = DEVICE_DT_GET_ANY(meas_htu21d);
 static const struct device *ms5637 = DEVICE_DT_GET_ANY(meas_ms5637);
 static const struct device *lsm6dsl = DEVICE_DT_GET_ANY(st_lsm6dsl);
 
-/**
- * Try to init a deferred-init sensor. If device_init() fails (driver error),
- * the device is marked as initialized with a non-zero init_res, so subsequent
- * calls return -EALREADY. To retry, we must clear the initialized flag.
- */
+/* Sensor data cache for display */
+static struct {
+	int32_t temp_milli;      /* HTU21D temperature in milli-C */
+	int32_t hum_milli;       /* HTU21D humidity in milli-%RH */
+	int32_t press_milli;     /* MS5637 pressure in milli-kPa */
+	int32_t accel_mg[3];     /* LSM6DSL accel in milli-g */
+} sensor_data;
+
+/* LED control */
+static void led_init(void)
+{
+	gpio_pin_configure_dt(&led_green, GPIO_OUTPUT_INACTIVE);
+	gpio_pin_configure_dt(&led_blue, GPIO_OUTPUT_INACTIVE);
+	gpio_pin_configure_dt(&led_red, GPIO_OUTPUT_INACTIVE);
+}
+
+static void led_set_error(void)
+{
+	error_occurred = true;
+	gpio_pin_set_dt(&led_red, 1);
+	gpio_pin_set_dt(&led_green, 0);
+	gpio_pin_set_dt(&led_blue, 0);
+}
+
+static void led_blink_blue(void)
+{
+	if (error_occurred) {
+		return;
+	}
+	gpio_pin_set_dt(&led_blue, 1);
+	k_msleep(50);
+	gpio_pin_set_dt(&led_blue, 0);
+}
+
+static void led_set_connected(void)
+{
+	if (error_occurred) {
+		return;
+	}
+	gpio_pin_set_dt(&led_green, 1);
+	gpio_pin_set_dt(&led_blue, 0);
+}
+
+static void led_set_advertising(void)
+{
+	if (error_occurred) {
+		return;
+	}
+	gpio_pin_set_dt(&led_green, 0);
+}
+
+/* BLE callbacks */
+static void bt_connected(struct bt_conn *conn, uint8_t err)
+{
+	if (err) {
+		LOG_ERR("BLE connection failed (%u)", err);
+		return;
+	}
+	LOG_INF("BLE connected");
+	ble_connected = true;
+	led_set_connected();
+}
+
+static void bt_disconnected(struct bt_conn *conn, uint8_t reason)
+{
+	LOG_INF("BLE disconnected (reason %u)", reason);
+	ble_connected = false;
+	led_set_advertising();
+}
+
+BT_CONN_CB_DEFINE(conn_callbacks) = {
+	.connected = bt_connected,
+	.disconnected = bt_disconnected,
+};
+
+/* Sensor init with retry */
 static int init_sensor(const struct device *dev, const char *name)
 {
 	int ret;
@@ -44,15 +130,9 @@ static int init_sensor(const struct device *dev, const char *name)
 		}
 
 		if (ret == -EALREADY && !device_is_ready(dev)) {
-			/*
-			 * Previous init attempt failed (init_res != 0) but
-			 * device is marked initialized. Clear the flag so
-			 * device_init() will re-run the driver init.
-			 */
 			dev->state->initialized = false;
 			dev->state->init_res = 0;
 		} else if (ret == -EALREADY) {
-			/* Already initialized and ready */
 			LOG_INF("%s: already initialized", name);
 			return 0;
 		}
@@ -65,98 +145,129 @@ static int init_sensor(const struct device *dev, const char *name)
 	return -EIO;
 }
 
-static void read_htu21d(void)
+/* Sensor reading */
+static bool read_sensors(bool htu_ok, bool ms_ok, bool lsm_ok)
 {
-	struct sensor_value temp, hum;
+	bool any_ok = false;
 
-	if (sensor_sample_fetch(htu21d)) {
-		LOG_WRN("HTU21D: fetch failed");
-		return;
+	if (htu_ok) {
+		struct sensor_value temp, hum;
+
+		if (sensor_sample_fetch(htu21d) == 0) {
+			sensor_channel_get(htu21d, SENSOR_CHAN_AMBIENT_TEMP, &temp);
+			sensor_channel_get(htu21d, SENSOR_CHAN_HUMIDITY, &hum);
+			sensor_data.temp_milli = sensor_value_to_milli(&temp);
+			sensor_data.hum_milli = sensor_value_to_milli(&hum);
+			LOG_INF("HTU21D: %d.%02d C, %d.%02d %%RH",
+				temp.val1, temp.val2 / 10000,
+				hum.val1, hum.val2 / 10000);
+			any_ok = true;
+		}
 	}
 
-	sensor_channel_get(htu21d, SENSOR_CHAN_AMBIENT_TEMP, &temp);
-	sensor_channel_get(htu21d, SENSOR_CHAN_HUMIDITY, &hum);
-	LOG_INF("HTU21D: %d.%02d C, %d.%02d %%RH",
-		temp.val1, temp.val2 / 10000,
-		hum.val1, hum.val2 / 10000);
+	if (ms_ok) {
+		struct sensor_value temp, press;
+
+		if (sensor_sample_fetch(ms5637) == 0) {
+			sensor_channel_get(ms5637, SENSOR_CHAN_AMBIENT_TEMP, &temp);
+			sensor_channel_get(ms5637, SENSOR_CHAN_PRESS, &press);
+			sensor_data.press_milli = sensor_value_to_milli(&press);
+			LOG_INF("MS5637: %d.%02d C, %d.%02d kPa",
+				temp.val1, temp.val2 / 10000,
+				press.val1, press.val2 / 10000);
+			any_ok = true;
+		}
+	}
+
+	if (lsm_ok) {
+		struct sensor_value accel[3];
+
+		if (sensor_sample_fetch(lsm6dsl) == 0) {
+			sensor_channel_get(lsm6dsl, SENSOR_CHAN_ACCEL_XYZ, accel);
+			sensor_data.accel_mg[0] = sensor_value_to_milli(&accel[0]);
+			sensor_data.accel_mg[1] = sensor_value_to_milli(&accel[1]);
+			sensor_data.accel_mg[2] = sensor_value_to_milli(&accel[2]);
+			any_ok = true;
+		}
+	}
+
+	return any_ok;
 }
 
-static void read_ms5637(void)
+/* E-ink display update */
+static void epd_update(const struct device *display)
 {
-	struct sensor_value temp, press;
-
-	if (sensor_sample_fetch(ms5637)) {
-		LOG_WRN("MS5637: fetch failed");
+	if (!display || !device_is_ready(display)) {
 		return;
 	}
 
-	sensor_channel_get(ms5637, SENSOR_CHAN_AMBIENT_TEMP, &temp);
-	sensor_channel_get(ms5637, SENSOR_CHAN_PRESS, &press);
-	LOG_INF("MS5637: %d.%02d C, %d.%02d kPa",
-		temp.val1, temp.val2 / 10000,
-		press.val1, press.val2 / 10000);
-}
+	struct display_capabilities caps;
+	struct display_buffer_descriptor desc;
+	/* 1-bit monochrome: 250 pixels wide = 32 bytes per row */
+	static uint8_t buf[32 * 12]; /* 12 rows per text line */
+	int y = 0;
 
-static void read_lsm6dsl(void)
-{
-	struct sensor_value accel[3], gyro[3];
-	int32_t ax, ay, az, gx, gy, gz;
+	display_get_capabilities(display, &caps);
 
-	if (sensor_sample_fetch(lsm6dsl)) {
-		LOG_WRN("LSM6DSL: fetch failed");
-		return;
+	/* Blank the display */
+	desc.buf_size = sizeof(buf);
+	desc.width = caps.x_resolution;
+	desc.pitch = caps.x_resolution;
+
+	/* Write sensor text lines using simple pixel-clear approach:
+	 * For a real product, use LVGL or a font renderer.
+	 * Here we just blank and let the display show the data via LOG.
+	 */
+	memset(buf, 0xFF, sizeof(buf)); /* white */
+	desc.height = 12;
+
+	/* Write each text line as a white band — the real display content
+	 * would come from a proper graphics library. For now, just trigger
+	 * a refresh so the display is alive.
+	 */
+	for (int row = 0; row < 10 && y < (int)caps.y_resolution; row++) {
+		display_write(display, 0, y, &desc, buf);
+		y += 12;
 	}
 
-	sensor_channel_get(lsm6dsl, SENSOR_CHAN_ACCEL_XYZ, accel);
-	sensor_channel_get(lsm6dsl, SENSOR_CHAN_GYRO_XYZ, gyro);
+	display_blanking_off(display);
 
-	/* Convert to milli-units for clean signed formatting */
-	ax = sensor_value_to_milli(&accel[0]);
-	ay = sensor_value_to_milli(&accel[1]);
-	az = sensor_value_to_milli(&accel[2]);
-	gx = sensor_value_to_milli(&gyro[0]);
-	gy = sensor_value_to_milli(&gyro[1]);
-	gz = sensor_value_to_milli(&gyro[2]);
-
-	LOG_INF("LSM6DSL: accel %d.%03d %d.%03d %d.%03d m/s2",
-		ax / 1000, abs(ax) % 1000,
-		ay / 1000, abs(ay) % 1000,
-		az / 1000, abs(az) % 1000);
-	LOG_INF("LSM6DSL: gyro %d.%03d %d.%03d %d.%03d dps",
-		gx / 1000, abs(gx) % 1000,
-		gy / 1000, abs(gy) % 1000,
-		gz / 1000, abs(gz) % 1000);
+	LOG_INF("E-ink display refreshed (sensor data on serial)");
 }
 
 int main(void)
 {
 	int err;
 	bool htu_ok, ms_ok, lsm_ok;
+	const struct device *display = DEVICE_DT_GET_ANY(solomon_ssd1680);
 
-	/* Start BLE advertising */
+	/* Initialize LEDs */
+	led_init();
+
+	/* Start BLE */
 	err = bt_enable(NULL);
 	if (err) {
 		LOG_ERR("BLE init failed (%d)", err);
+		led_set_error();
 	} else {
 		err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad,
 				      ARRAY_SIZE(ad), NULL, 0);
 		if (err) {
 			LOG_ERR("BLE advertising failed (%d)", err);
+			led_set_error();
 		} else {
 			LOG_INF("BLE advertising as \"%s\"",
 				CONFIG_BT_DEVICE_NAME);
+			led_blink_blue();
 		}
 	}
 
-	/* Give sensors time to power up after board reset */
+	/* Give sensors time to power up */
 	k_msleep(200);
 
-	/* Initialize sensors (deferred init with retries).
-	 * Small delay between each to let I2C bus settle.
-	 */
+	/* Initialize sensors */
 	lsm_ok = (init_sensor(lsm6dsl, "LSM6DSL") == 0);
 	if (lsm_ok) {
-		/* Set accel and gyro ODR to 12.5 Hz (low power) */
 		struct sensor_value odr = { .val1 = 12, .val2 = 500000 };
 
 		sensor_attr_set(lsm6dsl, SENSOR_CHAN_ACCEL_XYZ,
@@ -169,21 +280,27 @@ int main(void)
 	ms_ok = (init_sensor(ms5637, "MS5637") == 0);
 
 	if (!htu_ok && !ms_ok && !lsm_ok) {
-		LOG_ERR("No sensors available, not starting measurement loop");
-		return 0;
+		LOG_ERR("No sensors available");
+		led_set_error();
 	}
 
 	/* Measurement loop */
+	int cycle = 0;
+
 	while (1) {
-		if (htu_ok) {
-			read_htu21d();
+		read_sensors(htu_ok, ms_ok, lsm_ok);
+
+		/* Blink blue LED while advertising (not connected, no error) */
+		if (!ble_connected && !error_occurred) {
+			led_blink_blue();
 		}
-		if (ms_ok) {
-			read_ms5637();
+
+		/* Refresh e-ink every 6th cycle (30s) to avoid wear */
+		if (display && device_is_ready(display) && (cycle % 6) == 0) {
+			epd_update(display);
 		}
-		if (lsm_ok) {
-			read_lsm6dsl();
-		}
+
+		cycle++;
 		k_sleep(K_SECONDS(5));
 	}
 
