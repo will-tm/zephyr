@@ -705,6 +705,7 @@ tcl	Toby Churchill Ltd.
 tcs	Shenzhen City Tang Cheng Technology Co., Ltd.
 tdk	TDK Corporation.
 tdo	Shangai Top Display Optoelectronics Co., Ltd
+te	TE Connectivity
 technexion	TechNexion
 technologic	Technologic Systems
 techstar	Shenzhen Techstar Electronics Co., Ltd.
