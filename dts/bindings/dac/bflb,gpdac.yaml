@@ -1,0 +1,21 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Bouffalo Lab General-Purpose DAC (GPDAC).
+
+  Two-channel DAC with 10-bit resolution. Channel 0 is GPDAC-A,
+  channel 1 is GPDAC-B. The reg property points to the GPIP base
+  address which contains the DAC FIFO and config registers. The GLB
+  registers for channel control are accessed via the SoC GLB_BASE.
+
+compatible: "bflb,gpdac"
+
+include: [base.yaml, dac-controller.yaml]
+
+properties:
+  reg:
+    required: true
+
+  "#io-channel-cells":
+    const: 1

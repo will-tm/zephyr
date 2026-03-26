@@ -209,6 +209,13 @@
 			interrupt-parent = <&clic>;
 		};
 
+		dac0: dac@20002000 {
+			compatible = "bflb,gpdac";
+			reg = <0x20002000 0x100>;
+			#io-channel-cells = <1>;
+			status = "disabled";
+		};
+
 		sec_eng_trng: trng@20004000 {
 			compatible = "bflb,sec-eng-trng";
 			reg = <0x20004000 0x100>;
