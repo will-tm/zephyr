@@ -31,6 +31,7 @@ config DAC_INIT_PRIORITY
 
 # zephyr-keep-sorted-start
 source "drivers/dac/Kconfig.ad559x"
+source "drivers/dac/Kconfig.bflb"
 source "drivers/dac/Kconfig.ad569x"
 source "drivers/dac/Kconfig.ad56x1"
 source "drivers/dac/Kconfig.ad56xx"

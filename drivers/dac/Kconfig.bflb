@@ -1,0 +1,11 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config DAC_BFLB
+	bool "Bouffalo Lab GPDAC driver"
+	default y
+	depends on DT_HAS_BFLB_GPDAC_ENABLED
+	help
+	  Enable the Bouffalo Lab General-Purpose DAC (GPDAC) driver.
+	  Supports 2 channels with 10-bit resolution. Available on
+	  BL602, BL702, BL702L, BL616, BL618.
