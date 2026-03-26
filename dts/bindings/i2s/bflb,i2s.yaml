@@ -1,0 +1,35 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: Bouffalo Lab I2S controller
+
+compatible: "bflb,i2s"
+
+include: [i2s-controller.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  dmas:
+    required: true
+    description: |
+      DMA specifiers for TX and RX channels. Each specifier has a phandle
+      to the DMA controller, a channel number, and a peripheral trigger source.
+      Example for BL706:
+        dmas = <&dma0 0 0x15>, <&dma0 1 0x14>;
+        dma-names = "tx", "rx";
+
+  dma-names:
+    required: true
+    description: |
+      DMA channel names. Must include "tx" and/or "rx".
+
+  pinctrl-0:
+    required: true
+
+  pinctrl-names:
+    required: true
