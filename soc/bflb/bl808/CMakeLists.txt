@@ -22,3 +22,8 @@ zephyr_code_relocate_ifdef(CONFIG_PINCTRL_BFLB LIBRARY drivers__pinctrl LOCATION
 zephyr_code_relocate_ifdef(CONFIG_SYSCON_BFLB_EFUSE LIBRARY drivers__syscon LOCATION ITCM NOKEEP)
 zephyr_code_relocate_ifdef(CONFIG_SOC_FLASH_BFLB FILES ${ZEPHYR_BASE}/drivers/flash/flash_bflb.c
   LOCATION ITCM NOKEEP)
+
+if(CONFIG_BT_BFLB_BL808)
+  zephyr_sources(ble/btblecontroller_port_hw.c)
+  zephyr_linker_sources(RWDATA bflb_rwdata.ld)
+endif()

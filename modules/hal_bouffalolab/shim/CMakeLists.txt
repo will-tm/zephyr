@@ -3,3 +3,4 @@
 
 zephyr_sources_ifdef(CONFIG_BFLB_FREERTOS_SHIM freertos_shim.c)
 zephyr_sources_ifdef(CONFIG_BFLB_BTBLE_PORT_OS_SHIM btblecontroller_port_os.c)
+zephyr_sources_ifdef(CONFIG_BFLB_AOS_SHIM aos_shim.c)

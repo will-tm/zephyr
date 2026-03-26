@@ -19,18 +19,13 @@
 		zephyr,code-partition = &slot0_partition;
 		zephyr,sram = &sram0;
 		zephyr,console = &uart0;
-		zephyr,log-uart = &log_uarts;
 		zephyr,shell-uart = &uart0;
 		zephyr,entropy = &sec_eng_trng;
+		zephyr,bt-hci = &bt_hci_bflb;
 	};
 
 	aliases {
 		watchdog0 = &wdt0;
-	};
-
-	log_uarts: log_uarts {
-		compatible = "zephyr,log-uart";
-		uarts = <&uart1>;
 	};
 };
 
@@ -113,5 +108,14 @@
 };
 
 &sec_eng_sha {
+	status = "okay";
+};
+
+/* BLE controller takes the last 32KB of WRAM as Exchange Memory(EM_SEL=0x0F) */
+&sram0 {
+	reg = <0x22030000 DT_SIZE_K(176)>;
+};
+
+&bt_hci_bflb {
 	status = "okay";
 };

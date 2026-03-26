@@ -434,6 +434,11 @@
 			zephyr,memory-region = "MM_VRAM";
 		};
 
+		bt_hci_bflb: bt-hci {
+			compatible = "bflb,bt-hci";
+			status = "disabled";
+		};
+
 		mtimer: timer@e000bff8 {
 			compatible = "riscv,machine-timer";
 			reg = <0xe000bff8 0x8 0xe0004000 0x8>;

@@ -46,6 +46,18 @@
 #define bflb_controller_deinit()       btble_controller_deinit()
 #define bflb_rf_set_init_tsen_value(v) rf_set_init_tsen_value(v)
 
+#elif defined(CONFIG_BT_BFLB_BL808)
+
+extern void btble_controller_init(uint8_t task_priority);
+extern void ble_controller_deinit(void);
+extern int bl808_rf_init(void);
+
+/* BL606P blob exports the misspelled symbol; alias to the canonical name. */
+#define bt_onchiphci_handle_rx_acl bt_onchiphci_hanlde_rx_acl
+
+#define bflb_controller_init(prio) btble_controller_init(prio)
+#define bflb_controller_deinit()   ble_controller_deinit()
+
 #endif
 
 #include <zephyr/logging/log.h>
@@ -280,6 +292,7 @@ done:
 
 static void bflb_ble_rf_init(void)
 {
+#if defined(CONFIG_BT_BFLB_BL70X) || defined(CONFIG_BT_BFLB_BL70XL)
 	uint8_t mac[8] = {0U};
 
 	/*
@@ -291,6 +304,10 @@ static void bflb_ble_rf_init(void)
 
 	bl_wireless_mac_addr_set(mac);
 	bflb_rf_set_init_tsen_value(0U);
+#elif defined(CONFIG_BT_BFLB_BL808)
+	/* BL606P blob reads MAC from efuse internally; phyrf done in port_hw.c */
+	bl808_rf_init();
+#endif
 }
 
 static int bt_bflb_open(const struct device *dev, bt_hci_recv_t recv)

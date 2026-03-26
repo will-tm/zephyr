@@ -27,10 +27,16 @@ config BFLB_BTBLE_PORT_OS_SHIM
 	  Implements the btblecontroller_* OS abstraction for BL702L/BL616.
 	  Selected by SoC-specific BLE drivers that use the btblecontroller API.
 
+config BFLB_AOS_SHIM
+	bool
+	help
+	  AliOS-to-Zephyr shim for BL808 native BLE controller blob.
+	  Implements aos_*, bl_irq_*, and platform functions.
+
 config BFLB_SHIM_HEAP_SIZE
 	int "BLE shim heap size"
 	default 8192
-	depends on BFLB_FREERTOS_SHIM || BFLB_BTBLE_PORT_OS_SHIM
+	depends on BFLB_FREERTOS_SHIM || BFLB_BTBLE_PORT_OS_SHIM || BFLB_AOS_SHIM
 	help
 	  Size in bytes of the dedicated memory pool used by the BLE
 	  controller shim layer for threads, stacks, and queues.
