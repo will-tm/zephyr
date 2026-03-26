@@ -1,0 +1,28 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig I2S_BFLB
+	bool "Bouffalo Lab I2S driver"
+	default y
+	depends on DT_HAS_BFLB_I2S_ENABLED
+	select DMA
+	select PINCTRL
+	help
+	  Enable the I2S driver for Bouffalo Lab SoCs (BL702, BL706,
+	  BL616, BL618, BL808). Uses DMA for data transfer.
+
+if I2S_BFLB
+
+config I2S_BFLB_RX_BLOCK_COUNT
+	int "RX queue length"
+	default 4
+	help
+	  Length of the RX message queue in number of blocks.
+
+config I2S_BFLB_TX_BLOCK_COUNT
+	int "TX queue length"
+	default 4
+	help
+	  Length of the TX message queue in number of blocks.
+
+endif # I2S_BFLB
