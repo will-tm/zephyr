@@ -1,0 +1,41 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Bouffalo Lab AUADC (Audio ADC) controller with analog and PDM input.
+  Supports analog microphone input via integrated PGA/ADC and digital
+  PDM microphone input. Only one input mode is active at a time.
+
+compatible: "bflb,auadc"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  dmas:
+    required: true
+    description: |
+      RX DMA specifier. Each specifier has a phandle to the DMA controller,
+      a channel number, and a peripheral trigger source.
+
+  dma-names:
+    required: true
+    description: Must be "rx".
+
+  input-mode:
+    type: string
+    default: "adc"
+    enum:
+      - "adc"
+      - "pdm-left"
+      - "pdm-right"
+    description: |
+      Audio input mode.
+      adc: Analog ADC input via integrated PGA (BL616/BL618/BL702L only)
+      pdm-left: PDM digital microphone, left channel
+      pdm-right: PDM digital microphone, right channel

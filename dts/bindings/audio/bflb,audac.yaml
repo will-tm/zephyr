@@ -1,0 +1,36 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: Bouffalo Lab AUDAC (Audio DAC) controller
+
+compatible: "bflb,audac"
+
+include: [base.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  pinctrl-0:
+    required: true
+
+  pinctrl-names:
+    required: true
+
+  output-mode:
+    type: string
+    default: "pwm"
+    enum:
+      - "pwm"
+      - "gpdac-a"
+      - "gpdac-b"
+      - "gpdac-ab"
+    description: |
+      Audio DAC output mode.
+      pwm: Direct PWM output on GPIO pins
+      gpdac-a: Route to GPDAC channel A
+      gpdac-b: Route to GPDAC channel B
+      gpdac-ab: Route to both GPDAC channels
