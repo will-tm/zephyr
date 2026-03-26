@@ -1,0 +1,22 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config AUDIO_DMIC_BFLB_AUADC
+	bool "Bouffalo Lab AUADC (Audio ADC/PDM) DMIC driver"
+	default y
+	depends on DT_HAS_BFLB_AUADC_ENABLED
+	select DMA
+	help
+	  Enable the Bouffalo Lab integrated Audio ADC driver.
+	  Supports analog microphone input via PGA and digital
+	  PDM microphone input with DMA streaming.
+
+if AUDIO_DMIC_BFLB_AUADC
+
+config DMIC_BFLB_AUADC_QUEUE_SIZE
+	int "RX buffer queue depth"
+	default 4
+	help
+	  Number of audio capture buffers that can be queued.
+
+endif # AUDIO_DMIC_BFLB_AUADC

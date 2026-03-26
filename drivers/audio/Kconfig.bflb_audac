@@ -1,0 +1,11 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config AUDIO_CODEC_BFLB_AUDAC
+	bool "Bouffalo Lab AUDAC (Audio DAC) codec driver"
+	default y
+	depends on DT_HAS_BFLB_AUDAC_ENABLED
+	select PINCTRL
+	help
+	  Enable the Bouffalo Lab integrated Audio DAC driver.
+	  Supports PWM and GPDAC output modes with DMA streaming.

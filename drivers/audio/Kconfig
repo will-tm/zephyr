@@ -37,6 +37,7 @@ source "subsys/logging/Kconfig.template.log_config"
 
 # zephyr-keep-sorted-start
 source "drivers/audio/Kconfig.aw88298"
+source "drivers/audio/Kconfig.bflb_audac"
 source "drivers/audio/Kconfig.cs43l22"
 source "drivers/audio/Kconfig.da7212"
 source "drivers/audio/Kconfig.max98091"
@@ -69,6 +70,7 @@ module-str = audio_dmic
 source "subsys/logging/Kconfig.template.log_config"
 
 # zephyr-keep-sorted-start
+source "drivers/audio/Kconfig.bflb_auadc"
 source "drivers/audio/Kconfig.dmic_ambiq_pdm"
 source "drivers/audio/Kconfig.dmic_infineon"
 source "drivers/audio/Kconfig.dmic_mcux"
