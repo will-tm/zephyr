@@ -181,6 +181,11 @@ test_i2c_max44009: max44009@16 {
 	int-gpios = <&test_gpio 0 0>;
 };
 
+test_i2c_htu41d: htu41d@ce {
+	compatible = "meas,htu41d";
+	reg = <0xce>;
+};
+
 test_i2c_ms5607: ms5607@17 {
 	compatible = "meas,ms5607";
 	reg = <0x17>;
