@@ -111,11 +111,6 @@
 	status = "okay";
 };
 
-/* BLE controller takes the last 32KB of WRAM as Exchange Memory(EM_SEL=0x0F) */
-&sram0 {
-	reg = <0x22030000 DT_SIZE_K(176)>;
-};
-
-&bt_hci_bflb {
+&wifi0 {
 	status = "okay";
 };

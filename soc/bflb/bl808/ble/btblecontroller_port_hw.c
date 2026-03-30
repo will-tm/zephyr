@@ -60,7 +60,7 @@ int bl808_rf_init(void)
 	struct wl_cfg_t *cfg;
 
 	cfg = wl_cfg_get(wl_rmem_buf);
-	cfg->mode = WL_API_MODE_BZ;
+	cfg->mode = WL_API_MODE_ALL;
 	cfg->en_param_load = 0;
 	cfg->en_full_cal = 1;
 	cfg->capcode_get = NULL;

@@ -1,0 +1,36 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig WIFI_BFLB
+	bool "Bouffalo Lab BL808 WiFi support"
+	default y
+	depends on DT_HAS_BFLB_BL808X_WIFI_ENABLED
+	depends on SOC_SERIES_BL808
+	select NET_L2_WIFI_MGMT
+	select NET_L2_ETHERNET
+	select NET_L2_ETHERNET_MGMT
+	select WIFI_USE_NATIVE_NETWORKING
+	select DYNAMIC_THREAD
+	select DYNAMIC_THREAD_ALLOC
+	select HWINFO
+	select DYNAMIC_INTERRUPTS
+	select CRC
+	select MBEDTLS
+	select MBEDTLS_MD_C
+	select MBEDTLS_PSA_CRYPTO_C
+	select PSA_WANT_ALG_SHA_1
+	select PSA_WANT_ALG_HMAC
+	help
+	  Enable Bouffalo Lab BL808 SoC WiFi support.
+	  Uses binary blob firmware (libwifi.a) with an open-source
+	  host driver.
+
+if WIFI_BFLB
+
+config HEAP_MEM_POOL_ADD_SIZE_BFLB_WIFI
+	int
+	default 8192
+	help
+	  System heap for WiFi driver allocations.
+
+endif # WIFI_BFLB
