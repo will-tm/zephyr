@@ -1,0 +1,28 @@
+/*
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	aliases {
+		i2s-tx = &i2s0;
+	};
+};
+
+&i2s0 {
+	status = "okay";
+	pinctrl-0 = <&i2s0_default>;
+	pinctrl-names = "default";
+	dmas = <&dma0 0 0x11>, <&dma0 1 0x10>;
+	dma-names = "tx", "rx";
+	/*
+	 * I2S peripheral clock (AUPLL_DIV1 / POSTDIV / GLB_I2S_REF_CLK_DIV).
+	 * BL616 bootloader default: 491.52M / 20 / 2 = 12.288 MHz.
+	 */
+	clock-frequency = <12288000>;
+};
+
+&dma0 {
+	status = "okay";
+};

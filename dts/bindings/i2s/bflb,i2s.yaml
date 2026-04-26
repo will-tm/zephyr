@@ -19,17 +19,34 @@ properties:
     description: |
       DMA specifiers for TX and RX channels. Each specifier has a phandle
       to the DMA controller, a channel number, and a peripheral trigger source.
-      Example for BL706:
-        dmas = <&dma0 0 0x15>, <&dma0 1 0x14>;
+      Both TX and RX must be supplied; the driver currently requires both
+      DMA channels to be ready at init even when only one direction is used.
+
+      Peripheral trigger source IDs depend on the SoC:
+        BL702/BL706: TX=0x15, RX=0x14
+        BL616/BL618: TX=0x11, RX=0x10
+
+      Example for BL616/BL618:
+        dmas = <&dma0 0 0x11>, <&dma0 1 0x10>;
         dma-names = "tx", "rx";
 
   dma-names:
     required: true
-    description: |
-      DMA channel names. Must include "tx" and/or "rx".
+    description: DMA channel names. Must include both "tx" and "rx".
 
   pinctrl-0:
     required: true
 
   pinctrl-names:
     required: true
+
+  clock-frequency:
+    type: int
+    description: |
+      I2S peripheral source clock frequency in Hz. The I2S source on
+      Bouffalo Lab SoCs is the audio PLL (AUPLL) — its rate is not
+      currently exposed by the Zephyr clock controller, so it must be
+      passed in here when the bootloader has configured AUPLL to a known
+      frequency. If omitted, the driver falls back to the system tick
+      clock as a (likely incorrect) guess and will produce audio at the
+      wrong sample rate.

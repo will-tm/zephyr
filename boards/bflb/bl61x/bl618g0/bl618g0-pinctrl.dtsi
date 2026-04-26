@@ -45,4 +45,14 @@
 			drive-strength = <1>;
 		};
 	};
+
+	i2s0_default: i2s0_default {
+		group1 {
+			pinmux = <GPIO16_I2S_BCLK>,
+				 <GPIO17_I2S_FS>,
+				 <GPIO19_I2S_DO>;
+			input-schmitt-enable;
+			drive-strength = <1>;
+		};
+	};
 };

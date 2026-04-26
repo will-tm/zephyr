@@ -39,9 +39,13 @@ LOG_MODULE_REGISTER(i2s_bflb, CONFIG_I2S_LOG_LEVEL);
 #define BFLB_I2S_CLK_REG_OFFSET GLB_CLK_CFG3_OFFSET
 #define BFLB_I2S_CLK_EN_BIT     BIT(13)
 #define BFLB_I2S_CLK_SEL_BIT    BIT(12)
+/* AHB clock gate for I2S in GLB_CGEN_CFG1 (BL702: bit 26) */
+#define BFLB_I2S_CGEN_BIT       BIT(26)
 #elif defined(CONFIG_SOC_SERIES_BL61X)
 #define BFLB_I2S_CLK_REG_OFFSET GLB_I2S_CFG0_OFFSET
 #define BFLB_I2S_CLK_EN_BIT     BIT(7)
+/* AHB clock gate for I2S in GLB_CGEN_CFG1 (BL616/BL618: bit 27) */
+#define BFLB_I2S_CGEN_BIT       BIT(27)
 #endif
 
 struct i2s_bflb_queue_item {
@@ -64,6 +68,7 @@ struct i2s_bflb_stream {
 
 struct i2s_bflb_cfg {
 	uint32_t base;
+	uint32_t clock_frequency;
 	const struct pinctrl_dev_config *pcfg;
 	void (*irq_config)(const struct device *dev);
 };
@@ -153,6 +158,21 @@ static void i2s_bflb_enable_clock(void)
 {
 	uint32_t val;
 
+#if defined(CONFIG_SOC_SERIES_BL61X)
+	/* Ungate the I2S AHB clock — the BL61x clock driver does not. */
+	val = sys_read32(GLB_BASE + GLB_CGEN_CFG1_OFFSET);
+	val |= BFLB_I2S_CGEN_BIT;
+	sys_write32(val, GLB_BASE + GLB_CGEN_CFG1_OFFSET);
+
+	/*
+	 * Ungate AUPLL DIV1 (CGEN_CFG3 bit 16) — the I2S source clock comes
+	 * from AUPLL DIV1 / POSTDIV. The Zephyr clock driver gates this output.
+	 */
+	val = sys_read32(GLB_BASE + GLB_CGEN_CFG3_OFFSET);
+	val |= BIT(16);
+	sys_write32(val, GLB_BASE + GLB_CGEN_CFG3_OFFSET);
+#endif
+
 	val = sys_read32(GLB_BASE + BFLB_I2S_CLK_REG_OFFSET);
 	val |= BFLB_I2S_CLK_EN_BIT;
 	sys_write32(val, GLB_BASE + BFLB_I2S_CLK_REG_OFFSET);
@@ -179,11 +199,14 @@ static int i2s_bflb_set_clock(const struct i2s_bflb_cfg *cfg, uint32_t bclk_freq
 	uint32_t val;
 
 	/*
-	 * Get the I2S peripheral clock frequency.
-	 * On BL70x this is BCLK (system bus clock) by default.
-	 * On BL61x this is the I2S reference clock (defaults to BCLK).
+	 * I2S peripheral clock source is AUPLL on both BL70x and BL61x.
+	 * Allow `clock-frequency` DT override; otherwise fall back to the
+	 * system tick clock (best-effort guess that may be wrong).
 	 */
-	peri_clk = sys_clock_hw_cycles_per_sec();
+	peri_clk = cfg->clock_frequency;
+	if (peri_clk == 0U) {
+		peri_clk = sys_clock_hw_cycles_per_sec();
+	}
 
 	if (bclk_freq == 0U) {
 		return -EINVAL;
@@ -1086,6 +1109,7 @@ static DEVICE_API(i2s, i2s_bflb_driver_api) = {
                                                                                                    \
 	static const struct i2s_bflb_cfg i2s_bflb_cfg_##index = {                                  \
 		.base = DT_INST_REG_ADDR(index),                                                   \
+		.clock_frequency = DT_INST_PROP_OR(index, clock_frequency, 0),                     \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(index),                                     \
 		.irq_config = i2s_bflb_irq_config_##index,                                         \
 	};                                                                                         \

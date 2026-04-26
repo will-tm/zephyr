@@ -233,12 +233,14 @@ static int dma_bflb_configure(const struct device *dev, uint32_t channel,
 
 	size = block->block_size / config->dest_data_size;
 	control |= (size << DMA_TRANSFERSIZE_SHIFT) & DMA_TRANSFERSIZE_MASK;
+	/* Raise terminal-count interrupt at end of transfer. */
+	control |= DMA_I;
 
 	/* Clear interrupts */
 	sys_write32(1U << channel, cfg->base_reg + DMA_INTERRCLR_OFFSET);
 	sys_write32(1U << channel, cfg->base_reg + DMA_INTTCCLEAR_OFFSET);
 
-	/* Unmask interrupts */
+	/* Unmask interrupts (BFLB inverted polarity: 0=unmasked, 1=masked). */
 	ch_config &= ~(DMA_ITC | DMA_IE);
 
 	sys_write32(control, cfg->base_reg
