@@ -459,6 +459,16 @@
 			interrupt-parent = <&clic>;
 		};
 
+		usbd: usbd@20072000 {
+			compatible = "bflb,udc-2";
+			reg = <0x20072000 0x1000>;
+			maximum-speed = "high-speed";
+			status = "disabled";
+
+			interrupts = <37 8>;
+			interrupt-parent = <&clic>;
+		};
+
 		psram_uhs_ctrl: psram-uhs@3000f000 {
 			compatible = "bflb,bl808-psram-uhs-controller";
 			reg = <0x3000f000 DT_SIZE_K(4)>;
