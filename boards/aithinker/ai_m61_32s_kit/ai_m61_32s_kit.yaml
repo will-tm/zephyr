@@ -22,4 +22,5 @@ supported:
   - spi
   - flash
   - pwm
+  - usbd
 vendor: bflb
