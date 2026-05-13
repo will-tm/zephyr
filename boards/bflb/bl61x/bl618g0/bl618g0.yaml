@@ -29,4 +29,5 @@ supported:
   - counter
   - sdhc
   - can
+  - usbd
 vendor: bflb

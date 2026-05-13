@@ -22,4 +22,5 @@ supported:
   - flash
   - netif:wifi
   - pwm
+  - usbd
 vendor: bflb
