@@ -1,0 +1,10 @@
+sample:
+  name: BL61x PEC blink
+  description: Toggle a GPIO autonomously using a PEC state-machine program
+tests:
+  sample.boards.bflb.pec_blink:
+    platform_allow:
+      - bl618g0
+    tags:
+      - pec
+      - gpio

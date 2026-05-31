@@ -1,0 +1,25 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/pinctrl/bl618x-pinctrl.h>
+
+&pinctrl {
+	pec0_default: pec0_default {
+		group1 {
+			/* Route GPIO16 to the PEC block. The PEC virtual pin index
+			 * equals the GPIO number, so this is PEC pin 16 (see
+			 * PEC_BLINK_PIN in main.c). GPIO0-3 are JTAG on this board.
+			 */
+			pinmux = <GPIO16_PEC0_IO>;
+		};
+	};
+};
+
+&pec0 {
+	status = "okay";
+	pinctrl-0 = <&pec0_default>;
+	pinctrl-names = "default";
+};
