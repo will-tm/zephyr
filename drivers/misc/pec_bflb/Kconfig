@@ -1,0 +1,26 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config PEC_BFLB
+	bool "Bouffalo Lab PEC (programmable I/O) driver"
+	default y
+	depends on DT_HAS_BFLB_BL61X_PEC_ENABLED
+	help
+	  Enable the driver for the Bouffalo Lab PEC (Programmable
+	  Engine/Controller), a programmable I/O state-machine block on the
+	  BL61x SoCs.
+
+if PEC_BFLB
+
+config PEC_BFLB_INIT_PRIORITY
+	int "PEC init priority"
+	default 40
+	help
+	  Device initialisation priority for the PEC driver. Must be lower
+	  priority (higher number) than the pinctrl and clock-control drivers.
+
+module = PEC_BFLB
+module-str = pec_bflb
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # PEC_BFLB
