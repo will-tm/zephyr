@@ -1,0 +1,28 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+title: Bouffalo Lab PEC (Programmable Engine/Controller)
+
+description: |
+  A programmable I/O state-machine block on the BL61x SoCs. It provides four
+  state machines sharing a 32-entry instruction memory, driven through the API
+  in <zephyr/drivers/misc/pec_bflb/pec_bflb.h>.
+
+compatible: "bflb,bl61x-pec"
+
+include: [base.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    description: |
+      The two PEC interrupt lines (interrupt group 0 and group 1). The current
+      driver operates the FIFOs by polling and does not use these.
+
+  pinctrl-0:
+    required: true
+
+  pinctrl-names:
+    required: true

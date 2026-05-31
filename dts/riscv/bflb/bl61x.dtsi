@@ -438,6 +438,16 @@
 			size = <512>;
 		};
 
+		pec0: pec@2005a000 {
+			compatible = "bflb,bl61x-pec";
+			reg = <0x2005a000 0x200>;
+			status = "disabled";
+
+			interrupts = <50 1>, <51 1>;
+			interrupt-names = "int0", "int1";
+			interrupt-parent = <&clic>;
+		};
+
 		sdhc0: sdhc@20060000 {
 			compatible = "bflb,sdhc";
 			reg = <0x20060000 0x200>;
