@@ -1,0 +1,47 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include <bflb/bl808-lp.dtsi>
+#include <zephyr/dt-bindings/pinctrl/bflb-common-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/bl808x-pinctrl.h>
+
+/ {
+	model = "Sipeed M1S Dock LP";
+	compatible = "bflb,bl808";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,flash-controller = &flashctrl;
+		zephyr,code-partition = &slot0_partition;
+	};
+};
+
+&cpu0 {
+	clock-frequency = <DT_FREQ_M(80)>;
+};
+
+&flashctrl {
+	flash0: flash@58020000 {
+		compatible = "soc-nv-flash";
+		reg = <0x58020000 DT_SIZE_M(1)>;
+		write-block-size = <1>;
+		erase-block-size = <DT_SIZE_K(4)>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			slot0_partition: partition@0 {
+				label = "image-0";
+				reg = <0x00000000 DT_SIZE_M(1)>;
+			};
+		};
+	};
+};

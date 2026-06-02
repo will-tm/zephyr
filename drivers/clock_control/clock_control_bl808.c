@@ -989,13 +989,18 @@ static void clock_control_bl808_set_mm_clks(enum bl808_clkid source_root, uint8_
 
 	if (source_root == bl808_clkid_clk_wifipll) {
 		tmp = sys_read32(MM_GLB_BASE + MM_GLB_MM_CLK_CTRL_CPU_OFFSET);
-		/* Switch MM mux to PLL 320M output */
+		/* CPU_CLK_SEL=1: muxpll 320M (wifipll) */
 		tmp = (tmp & MM_GLB_REG_CPU_CLK_SEL_UMSK) | (1U << MM_GLB_REG_CPU_CLK_SEL_POS);
-		/* Switch MM root to PLL */
 		tmp |= MM_GLB_REG_CPU_ROOT_CLK_SEL_MSK;
 		sys_write32(tmp, MM_GLB_BASE + MM_GLB_MM_CLK_CTRL_CPU_OFFSET);
-	} else {
-		/* Unsupported */
+	} else if (source_root == bl808_clkid_clk_cpupll) {
+		tmp = sys_read32(MM_GLB_BASE + MM_GLB_MM_CLK_CTRL_CPU_OFFSET);
+		/* CPU_CLK_SEL=2: cpupll output */
+		tmp = (tmp & MM_GLB_REG_CPU_CLK_SEL_UMSK) | (2U << MM_GLB_REG_CPU_CLK_SEL_POS);
+		tmp |= MM_GLB_REG_CPU_ROOT_CLK_SEL_MSK;
+		sys_write32(tmp, MM_GLB_BASE + MM_GLB_MM_CLK_CTRL_CPU_OFFSET);
+	} else if (source_root != bl808_clkid_clk_rc32m && source_root != bl808_clkid_clk_crystal) {
+		/* Unsupported PLL source */
 	}
 
 	if (source_bclk1x == bl808_clkid_clk_wifipll) {

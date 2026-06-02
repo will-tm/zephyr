@@ -1,0 +1,56 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include <bflb/bl808-d0.dtsi>
+#include "m1s_dock_bl808c09q2i_d0-pinctrl.dtsi"
+
+/ {
+	model = "Sipeed M1S Dock D0";
+	compatible = "bflb,bl808";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,console = &uart3;
+		zephyr,shell-uart = &uart3;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+	};
+};
+
+&cpu0 {
+	clock-frequency = <DT_FREQ_M(480)>;
+};
+
+&flashctrl {
+	flash0: flash@58000000 {
+		compatible = "soc-nv-flash";
+		reg = <0x58000000 DT_SIZE_M(8)>;
+		write-block-size = <1>;
+		erase-block-size = <DT_SIZE_K(4)>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			slot0_partition: partition@0 {
+				label = "image-0";
+				reg = <0x00000000 DT_SIZE_M(8)>;
+			};
+		};
+	};
+};
+
+&uart3 {
+	status = "okay";
+	current-speed = <2000000>;
+
+	pinctrl-0 = <&uart3_default>;
+	pinctrl-1 = <&uart3_sleep>;
+	pinctrl-names = "default", "sleep";
+};

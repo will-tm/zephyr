@@ -6,7 +6,7 @@
 
 /dts-v1/;
 
-#include <bflb/bl808.dtsi>
+#include <bflb/bl808-m0.dtsi>
 #include "m1s-pinctrl.dtsi"
 
 / {

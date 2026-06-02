@@ -1,0 +1,83 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * BL808 D0 core (T-Head C906, RV64IMAFDC).
+ */
+
+#include <bflb/bl808.dtsi>
+
+/ {
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <DT_FREQ_M(1)>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "xuantie,c906", "riscv";
+			reg = <0>;
+			riscv,isa-base = "rv64i";
+			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
+					       "zicsr", "zifencei";
+			i-cache-line-size = <64>;
+			d-cache-line-size = <64>;
+			status = "okay";
+
+			hlic: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				#address-cells = <0>;
+				#interrupt-cells = <1>;
+				interrupt-controller;
+			};
+		};
+	};
+};
+
+&soc {
+	plic: interrupt-controller@e0000000 {
+		compatible = "sifive,plic-1.0.0";
+		reg = <0xe0000000 0x04000000>;
+		riscv,max-priority = <7>;
+		riscv,ndev = <64>;
+		#address-cells = <0>;
+		#interrupt-cells = <2>;
+		interrupt-controller;
+		interrupts-extended = <&hlic 11>;
+	};
+
+	mtimer: timer@e4004000 {
+		compatible = "riscv,machine-timer";
+		reg = <0xe4004000 0x8>;
+		reg-names = "mtimecmp";
+		interrupts-extended = <&hlic 7>;
+	};
+
+	sram0: memory@3eff8000 {
+		compatible = "mmio-sram";
+		reg = <0x3eff8000 DT_SIZE_K(64)>;
+	};
+};
+
+/* Override MM-domain peripherals to use D0 PLIC */
+&uart3 {
+	interrupt-parent = <&plic>;
+	status = "okay";
+};
+
+&i2c2 {
+	interrupt-parent = <&plic>;
+};
+
+&i2c3 {
+	interrupt-parent = <&plic>;
+};
+
+&spi1 {
+	interrupt-parent = <&plic>;
+};
+
+&dma2 {
+	interrupt-parent = <&plic>;
+};

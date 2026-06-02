@@ -2,6 +2,10 @@
  * Copyright The Zephyr Project Contributors
  *
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * BL808 SoC devicetree — clocks, peripherals, and memory regions.
+ * Per-core dtsi files add CPU, interrupt controller, timer, RAM,
+ * and wire interrupt-parent to peripherals they use.
  */
 
 #include <freq.h>
@@ -120,40 +124,23 @@
 		zephyr,flash-controller = &flashctrl;
 	};
 
-	cpus {
-		#address-cells = <1>;
-		#size-cells = <0>;
-		timebase-frequency = <DT_FREQ_M(1)>;
-
-		cpu0: cpu@0 {
-			device_type = "cpu";
-			compatible = "xuantie,e907", "riscv";
-			reg = <0>;
-			riscv,isa-base = "rv32i";
-			riscv,isa-extensions = "i", "m", "a", "f", "c", "zicsr", "zifencei";
-			i-cache-line-size = <32>;
-			d-cache-line-size = <32>;
-			hardware-exec-breakpoint-count = <4>;
-			status = "okay";
-
-			#address-cells = <1>;
-			#size-cells = <1>;
-
-			clic: clic@e0800000 {
-				compatible = "nuclei,eclic";
-				reg = <0xe0800000 0x10000>;
-				#address-cells = <0>;
-				#interrupt-cells = <2>;
-				interrupt-controller;
-			};
-		};
-	};
-
-	soc {
+	soc: soc {
 		compatible = "simple-bus";
 		#address-cells = <1>;
 		#size-cells = <1>;
 		ranges;
+
+		/* Default interrupt controller (M0/LP CLIC).
+		 * D0 overrides this with PLIC for its peripherals.
+		 */
+		clic: clic@e0800000 {
+			compatible = "nuclei,eclic";
+			reg = <0xe0800000 0x10000>;
+			#address-cells = <0>;
+			#interrupt-cells = <2>;
+			interrupt-controller;
+			status = "disabled";
+		};
 
 		pinctrl: pin-controller@20000000 {
 			compatible = "bflb,pinctrl";
@@ -168,10 +155,10 @@
 			reg = <0x20000000 0x1000>;
 			#address-cells = <1>;
 			#size-cells = <0>;
-
 			interrupts = <60 1>, <47 1>;
 			interrupt-names = "gpio", "fifo";
 			interrupt-parent = <&clic>;
+			status = "disabled";
 
 			gpio0: gpio@0 {
 				#gpio-cells = <2>;
@@ -264,6 +251,14 @@
 			status = "disabled";
 		};
 
+		uart2: uart@2000aa00 {
+			compatible = "bflb,uart";
+			reg = <0x2000aa00 0x100>;
+			interrupts = <46 1>;
+			interrupt-parent = <&clic>;
+			status = "disabled";
+		};
+
 		spi0: spi@2000a200 {
 			compatible = "bflb,spi";
 			reg = <0x2000a200 0x100>;
@@ -288,10 +283,9 @@
 			compatible = "bflb,pwm-2";
 			reg = <0x2000a400 0x100>;
 			#pwm-cells = <3>;
-			status = "disabled";
-
 			interrupts = <49 1>;
 			interrupt-parent = <&clic>;
+			status = "disabled";
 		};
 
 		wdt0: watchdog@2000a500 {
@@ -313,19 +307,17 @@
 			timer0: channel@0 {
 				compatible = "bflb,timer-channel";
 				reg = <0>;
-				status = "disabled";
-
 				interrupts = <52 1>;
 				interrupt-parent = <&clic>;
+				status = "disabled";
 			};
 
 			timer1: channel@1 {
 				compatible = "bflb,timer-channel";
 				reg = <1>;
-				status = "disabled";
-
 				interrupts = <53 1>;
 				interrupt-parent = <&clic>;
+				status = "disabled";
 			};
 		};
 
@@ -354,10 +346,9 @@
 			reg = <0x2000b000 0x1000>;
 			#address-cells = <1>;
 			#size-cells = <1>;
-			status = "okay";
-
 			interrupts = <29 1>;
 			interrupt-parent = <&clic>;
+			status = "okay";
 		};
 
 		dma0: dma@2000c000 {
@@ -365,7 +356,6 @@
 			reg = <0x2000c000 0x1000>;
 			#dma-cells = <2>;
 			dma-channels = <4>;
-
 			interrupts = <31 1>;
 			interrupt-parent = <&clic>;
 		};
@@ -374,11 +364,10 @@
 			compatible = "bflb,power-controller";
 			reg = <0x2000f000 0x1000>, <0x2000f000 0x1000>;
 			reg-names = "hbn", "aon";
-			status = "okay";
-
 			interrupts = <67 1>, <68 1>, <69 1>;
 			interrupt-parent = <&clic>;
 			interrupt-names = "hbn0", "hbn1", "bor";
+			status = "disabled";
 		};
 
 		reg_soc: regulator-soc@2000f000 {
@@ -420,41 +409,57 @@
 		sdhc0: sdhc@20060000 {
 			compatible = "bflb,sdhc";
 			reg = <0x20060000 0x200>;
-			status = "disabled";
-
 			interrupts = <33 1>;
+			interrupt-parent = <&clic>;
+			status = "disabled";
+		};
+
+		/* MM-domain peripherals (D0 subsystem) */
+		dma2: dma@30001000 {
+			compatible = "bflb,dma";
+			reg = <0x30001000 0x1000>;
+			#dma-cells = <2>;
+			dma-channels = <4>;
+			interrupts = <40 1>;
 			interrupt-parent = <&clic>;
 		};
 
-		itcm: memory@62020000 {
-			compatible = "zephyr,memory-region", "mmio-sram";
-			reg = <0x62020000 DT_SIZE_K(16)>;
-			zephyr,memory-region = "ITCM";
+		uart3: uart@30002000 {
+			compatible = "bflb,uart";
+			reg = <0x30002000 0x100>;
+			interrupts = <20 1>;
+			interrupt-parent = <&clic>;
+			status = "disabled";
 		};
 
-		sram0: memory@62024000 {
-			compatible = "mmio-sram";
-			reg = <0x62024000 DT_SIZE_K(208)>;
+		i2c2: i2c@30003000 {
+			compatible = "bflb,i2c";
+			reg = <0x30003000 0x100>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			interrupts = <21 1>;
+			interrupt-parent = <&clic>;
+			status = "disabled";
 		};
 
-		dram0: memory@3ef80000 {
-			compatible = "zephyr,memory-region", "mmio-sram";
-			reg = <0x3ef80000 DT_SIZE_K(512)>;
-			zephyr,memory-region = "MM_DRAM";
+		i2c3: i2c@30004000 {
+			compatible = "bflb,i2c";
+			reg = <0x30004000 0x100>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			interrupts = <22 1>;
+			interrupt-parent = <&clic>;
+			status = "disabled";
 		};
 
-		vram0: memory@3f000000 {
-			compatible = "zephyr,memory-region", "mmio-sram";
-			reg = <0x3f000000 DT_SIZE_K(32)>;
-			zephyr,memory-region = "MM_VRAM";
-		};
-
-		mtimer: timer@e000bff8 {
-			compatible = "riscv,machine-timer";
-			reg = <0xe000bff8 0x8 0xe0004000 0x8>;
-			reg-names = "mtime", "mtimecmp";
-
-			interrupts-extended = <&clic 7 1>;
+		spi1: spi@30008000 {
+			compatible = "bflb,spi";
+			reg = <0x30008000 0x100>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			interrupts = <23 1>;
+			interrupt-parent = <&clic>;
+			status = "disabled";
 		};
 	};
 };

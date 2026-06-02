@@ -15,9 +15,12 @@
 
 #define DT_DRV_COMPAT riscv_machine_timer
 
-#define MTIME_REG    DT_INST_REG_ADDR_BY_NAME(0, mtime)
 #define MTIMECMP_REG DT_INST_REG_ADDR_BY_NAME(0, mtimecmp)
-#define TIMER_IRQN   DT_INST_IRQN(0)
+
+#if DT_INST_REG_HAS_NAME(0, mtime)
+#define MTIME_REG DT_INST_REG_ADDR_BY_NAME(0, mtime)
+#endif
+#define TIMER_IRQN DT_INST_IRQN(0)
 
 #define CYC_PER_TICK (uint32_t)(sys_clock_hw_cycles_per_sec() / CONFIG_SYS_CLOCK_TICKS_PER_SEC)
 
@@ -65,7 +68,7 @@ static uintptr_t get_hart_mtimecmp(void)
 
 static void set_mtimecmp(uint64_t time)
 {
-#ifdef CONFIG_64BIT
+#if defined(CONFIG_64BIT) && !defined(CONFIG_RISCV_MACHINE_TIMER_NO_64BIT_MMIO)
 	*(volatile uint64_t *)get_hart_mtimecmp() = time;
 #else
 	volatile uint32_t *r = (uint32_t *)get_hart_mtimecmp();
@@ -84,7 +87,11 @@ static void set_mtimecmp(uint64_t time)
 
 static uint64_t mtime(void)
 {
-#ifdef CONFIG_64BIT
+#ifndef MTIME_REG
+	uint64_t val;
+	__asm__ volatile("csrr %0, time" : "=r"(val));
+	return val;
+#elif defined(CONFIG_64BIT)
 	return *(volatile uint64_t *)MTIME_REG;
 #else
 	volatile uint32_t *r = (uint32_t *)MTIME_REG;

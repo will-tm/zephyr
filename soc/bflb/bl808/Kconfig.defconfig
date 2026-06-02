@@ -7,11 +7,15 @@ if SOC_SERIES_BL808
 configdefault FPU
 	default y
 
-config SOC_RESET_HOOK
-	default y
-
 config SYS_CLOCK_TICKS_PER_SEC
 	default 5000
+
+endif # SOC_SERIES_BL808
+
+if SOC_BL808_M0
+
+config SOC_RESET_HOOK
+	default y
 
 config NUM_IRQS
 	default 80
@@ -22,4 +26,33 @@ config ARCH_SW_ISR_TABLE_ALIGN
 config RISCV_MCAUSE_EXCEPTION_MASK
 	default 0xFFF
 
-endif # SOC_SERIES_BL808
+endif # SOC_BL808_M0
+
+if SOC_BL808_D0
+
+config SOC_RESET_HOOK
+	default y
+
+config NUM_IRQS
+	default 64
+
+config RISCV_MCAUSE_EXCEPTION_MASK
+	default 0x7FFFFFFFFFFFFFFF
+
+endif # SOC_BL808_D0
+
+if SOC_BL808_LP
+
+configdefault FPU
+	default n
+
+config NUM_IRQS
+	default 48
+
+config ARCH_SW_ISR_TABLE_ALIGN
+	default 64
+
+config RISCV_MCAUSE_EXCEPTION_MASK
+	default 0xFFF
+
+endif # SOC_BL808_LP

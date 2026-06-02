@@ -3,9 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 zephyr_include_directories(.)
-zephyr_sources(soc.c)
 
 set(SOC_LINKER_SCRIPT ${ZEPHYR_BASE}/include/zephyr/arch/riscv/common/linker.ld CACHE INTERNAL "")
+
+if(CONFIG_SOC_BL808_M0)
+
+zephyr_sources(soc_m0.c)
 
 zephyr_code_relocate(
   FILES ${ZEPHYR_BASE}/arch/riscv/custom/thead/cache_xtheadcmo.c LOCATION ITCM NOKEEP)
@@ -22,3 +25,17 @@ zephyr_code_relocate_ifdef(CONFIG_PINCTRL_BFLB LIBRARY drivers__pinctrl LOCATION
 zephyr_code_relocate_ifdef(CONFIG_SYSCON_BFLB_EFUSE LIBRARY drivers__syscon LOCATION ITCM NOKEEP)
 zephyr_code_relocate_ifdef(CONFIG_SOC_FLASH_BFLB FILES ${ZEPHYR_BASE}/drivers/flash/flash_bflb.c
   LOCATION ITCM NOKEEP)
+
+endif() # CONFIG_SOC_BL808_M0
+
+if(CONFIG_SOC_BL808_D0)
+
+zephyr_sources(soc_d0.c)
+
+endif() # CONFIG_SOC_BL808_D0
+
+if(CONFIG_SOC_BL808_LP)
+
+zephyr_sources(soc_lp.c)
+
+endif() # CONFIG_SOC_BL808_LP

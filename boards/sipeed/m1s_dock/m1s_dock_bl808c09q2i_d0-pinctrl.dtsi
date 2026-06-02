@@ -1,0 +1,27 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/pinctrl/bflb-common-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/bl808x-pinctrl.h>
+
+&pinctrl {
+	uart3_default: uart3_default {
+		group1 {
+			pinmux = <GPIO17_MM_UART_RX>,
+				 <GPIO16_MM_UART_TX>;
+			bias-pull-up;
+			input-schmitt-enable;
+		};
+	};
+
+	uart3_sleep: uart3_sleep {
+		group1 {
+			pinmux = <GPIO17_MM_UART_RX>,
+				 <GPIO16_MM_UART_TX>;
+			bias-high-impedance;
+		};
+	};
+};

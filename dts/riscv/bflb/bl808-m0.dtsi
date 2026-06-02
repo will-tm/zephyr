@@ -1,0 +1,70 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * BL808 M0 core (T-Head E907, RV32IMAFC).
+ * The CLIC and peripheral interrupts are defined in bl808.dtsi.
+ */
+
+#include <bflb/bl808.dtsi>
+
+/ {
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <DT_FREQ_M(1)>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "xuantie,e907", "riscv";
+			reg = <0>;
+			riscv,isa-base = "rv32i";
+			riscv,isa-extensions = "i", "m", "a", "f", "c", "zicsr", "zifencei";
+			i-cache-line-size = <32>;
+			d-cache-line-size = <32>;
+			hardware-exec-breakpoint-count = <4>;
+			status = "okay";
+		};
+	};
+};
+
+&soc {
+	itcm: memory@62020000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0x62020000 DT_SIZE_K(16)>;
+		zephyr,memory-region = "ITCM";
+	};
+
+	sram0: memory@62024000 {
+		compatible = "mmio-sram";
+		reg = <0x62024000 DT_SIZE_K(208)>;
+	};
+
+	dram0: memory@3ef80000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0x3ef80000 DT_SIZE_K(512)>;
+		zephyr,memory-region = "MM_DRAM";
+	};
+
+	vram0: memory@3f000000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0x3f000000 DT_SIZE_K(32)>;
+		zephyr,memory-region = "MM_VRAM";
+	};
+
+	mtimer: timer@e000bff8 {
+		compatible = "riscv,machine-timer";
+		reg = <0xe000bff8 0x8 0xe0004000 0x8>;
+		reg-names = "mtime", "mtimecmp";
+		interrupts-extended = <&clic 7 1>;
+	};
+};
+
+&clic {
+	status = "okay";
+};
+
+&powerctrl {
+	status = "okay";
+};

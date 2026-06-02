@@ -12,6 +12,6 @@ e24/soc.c
 )
 endif()
 
-zephyr_sources(
+zephyr_sources_ifdef(CONFIG_DT_HAS_BFLB_POWER_CONTROLLER_ENABLED
 power.c
 )
