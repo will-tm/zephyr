@@ -1,6 +1,7 @@
 /*
- * BL808 M0 bootloader — releases D0 and LP cores,
- * polls XRAM ring buffers for console output forwarding.
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <zephyr/kernel.h>
@@ -14,12 +15,16 @@
 #include <mm_misc_reg.h>
 #include <pds_reg.h>
 
-#define D0_FLASH_OFFSET 0x100000
-#define D0_BOOT_ADDR    0x58000000
-#define LP_FLASH_OFFSET 0x020000
-#define LP_BOOT_ADDR    0x58020000
-#define SF_CTRL         0x2000b000
-#define SF_ID1_OFF      0xA4
+#define D0_FLASH_OFFSET  0x100000
+#define D0_L2SRAM_BASE   0x3ef80000
+#define D0_L2SRAM_SIZE   (512 * 1024)
+#define D0_BOOT_ADDR     D0_L2SRAM_BASE
+#define LP_FLASH_OFFSET  0x020000
+#define LP_SRAM_BASE     0x2202c000
+#define LP_SRAM_SIZE     (48 * 1024)
+#define LP_BOOT_ADDR     LP_SRAM_BASE
+#define SF_CTRL          0x2000b000
+#define SF_ID1_OFF       0xA4
 
 #define IPC_SYNC_ADDR1 0x40000000
 #define IPC_SYNC_ADDR2 0x40000004
@@ -56,12 +61,19 @@ static void release_d0_core(void)
 {
 	uint32_t tmp;
 
+	/* Copy D0 firmware from flash to L2SRAM */
+	volatile uint32_t *src = (volatile uint32_t *)(0x58000000 + D0_FLASH_OFFSET);
+	volatile uint32_t *dst = (volatile uint32_t *)D0_L2SRAM_BASE;
+
+	for (uint32_t i = 0; i < D0_L2SRAM_SIZE / 4; i++) {
+		dst[i] = src[i];
+	}
+
 	tmp = sys_read32(0x20005300);
 	tmp |= BIT(0);
 	sys_write32(tmp, 0x20005300);
 
 	sys_write32(D0_BOOT_ADDR, MM_MISC_BASE + MM_MISC_CPU0_BOOT_OFFSET);
-	sys_write32(D0_FLASH_OFFSET + 0x2000, SF_CTRL + SF_ID1_OFF);
 
 	tmp = sys_read32(MM_GLB_BASE + MM_GLB_MM_CLK_CTRL_CPU_OFFSET);
 	tmp |= MM_GLB_REG_MMCPU0_CLK_EN_MSK;
@@ -80,10 +92,15 @@ static void release_lp_core(void)
 {
 	uint32_t tmp;
 
-	/* LP mtimer clock: PDS_CPU_CORE_CFG8 at PDS_BASE(0x2000E000)+0x130
-	 * LP can't access PDS — must be done from M0.
-	 * PBCLK=80MHz, div=79 → 1MHz tick.
-	 */
+	/* Copy LP firmware from flash to SRAM */
+	volatile uint32_t *src = (volatile uint32_t *)(0x58000000 + LP_FLASH_OFFSET);
+	volatile uint32_t *dst = (volatile uint32_t *)LP_SRAM_BASE;
+
+	for (uint32_t i = 0; i < LP_SRAM_SIZE / 4; i++) {
+		dst[i] = src[i];
+	}
+
+	/* LP mtimer clock: PBCLK=80MHz, div=79 -> 1MHz tick */
 	tmp = sys_read32(PDS_BASE + PDS_CPU_CORE_CFG8_OFFSET);
 	tmp &= ~(1U << 31);
 	sys_write32(tmp, PDS_BASE + PDS_CPU_CORE_CFG8_OFFSET);
@@ -105,7 +122,7 @@ static void release_lp_core(void)
 }
 
 #define DRAIN_STACK_SIZE 1024
-#define DRAIN_PRIORITY   7
+#define DRAIN_PRIORITY   -1
 
 static void drain_thread(void *p1, void *p2, void *p3)
 {
@@ -122,18 +139,21 @@ static void drain_thread(void *p1, void *p2, void *p3)
 
 K_THREAD_DEFINE(drain_tid, DRAIN_STACK_SIZE, drain_thread, NULL, NULL, NULL, DRAIN_PRIORITY, 0, 0);
 
+int coremark_run(void);
+
 int main(void)
 {
-	int i = 0;
-
 	printk("[M0] Releasing D0 + LP...\n");
 	release_d0_core();
 	release_lp_core();
 	printk("[M0] All cores released\n");
 
+	printk("[M0] CoreMark starting\n");
+	coremark_run();
+	printk("[M0] CoreMark done\n");
+
 	while (1) {
-		printk("[M0] tick %d\n", i++);
-		k_msleep(1000);
+		k_sleep(K_FOREVER);
 	}
 	return 0;
 }

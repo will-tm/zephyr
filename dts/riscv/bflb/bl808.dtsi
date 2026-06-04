@@ -83,7 +83,7 @@
 			#clock-cells = <1>;
 			compatible = "bflb,pll";
 			clocks = <&clk_crystal>;
-			top-frequency = <DT_FREQ_M(320)>;
+			top-frequency = <BL808_CPUPLL_TOP_FREQ>;
 			status = "okay";
 		};
 
@@ -114,7 +114,7 @@
 		clk_mm: clk-mm {
 			#clock-cells = <0>;
 			compatible = "bflb,root-clk";
-			clocks = <&clk_wifipll BL808_WIFIPLL_ID_DIV1>;
+			clocks = <&clk_cpupll BL808_CPUPLL_ID_DIV1>;
 			divider = <1>;
 			status = "okay";
 		};

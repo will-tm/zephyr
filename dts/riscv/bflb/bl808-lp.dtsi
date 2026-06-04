@@ -27,9 +27,9 @@
 };
 
 &soc {
-	sram0: memory@22034000 {
+	sram0: memory@2202c000 {
 		compatible = "mmio-sram";
-		reg = <0x22034000 DT_SIZE_K(16)>;
+		reg = <0x2202c000 DT_SIZE_K(48)>;
 	};
 
 	mtimer: timer@e000bff8 {
