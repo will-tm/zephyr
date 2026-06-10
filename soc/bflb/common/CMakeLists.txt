@@ -10,6 +10,10 @@ zephyr_sources(
 e24/soc_irq_privileged.c
 e24/soc.c
 )
+
+if(CONFIG_PM)
+  zephyr_code_relocate(FILES e24/soc_irq_privileged.c LOCATION ITCM NOKEEP)
+endif()
 endif()
 
 zephyr_sources(
