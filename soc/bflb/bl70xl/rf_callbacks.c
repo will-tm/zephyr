@@ -11,19 +11,10 @@
 #include <zephyr/arch/riscv/arch.h>
 #include <stdint.h>
 
-/* Forward declarations from bl702l_rf.h */
-extern void rf_set_bz_mode(uint8_t mode);
+#include <bouffalolab/bl70xl/rf/bl702l_rf.h>
+#include <bouffalolab/bl70xl/rf/bl702l_phy.h>
 
-/* From bl702l_phy.h */
-extern void bz_phy_set_tx_power_offset(int8_t poweroffset_zigbee[16], int8_t poweroffset_ble[4]);
-
-/* From bl_wireless shims */
 extern int bl_wireless_power_offset_get(int8_t poweroffset_zigbee[16], int8_t poweroffset_ble[4]);
-
-/* Mode constants from bl702l_rf.h */
-#define MODE_BLE_ONLY 0
-#define MODE_ZB_ONLY  1
-#define MODE_BZ_COEX  2
 
 /*
  * rf_reset_done_callback — Called after RF reset completes.
