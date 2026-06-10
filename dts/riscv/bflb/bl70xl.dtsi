@@ -108,6 +108,7 @@
 			riscv,isa-base = "rv32i";
 			riscv,isa-extensions = "i", "m", "a", "f", "c", "zicsr", "zifencei";
 			hardware-exec-breakpoint-count = <4>;
+			cpu-power-states = <&pds_level31>;
 
 			ictrl: interrupt-controller {
 				#address-cells = <0>;
@@ -115,6 +116,15 @@
 				compatible = "riscv,cpu-intc";
 				interrupt-controller;
 			};
+		};
+	};
+
+	power-states {
+		pds_level31: pds-level31 {
+			compatible = "zephyr,power-state";
+			power-state-name = "suspend-to-ram";
+			min-residency-us = <5000>;
+			exit-latency-us = <2000>;
 		};
 	};
 
@@ -359,6 +369,17 @@
 			interrupts = <67 0>, <68 0>, <69 0>;
 			interrupt-parent = <&clic>;
 			interrupt-names = "hbn0", "hbn1", "bor";
+		};
+
+		pds: power-downsleep@4000e000 {
+			compatible = "bflb,pds";
+			reg = <0x4000e000 0x1000>;
+
+			interrupts = <66 0>;
+			interrupt-parent = <&clic>;
+			interrupt-names = "wakeup";
+
+			status = "disabled";
 		};
 
 		reg_soc: regulator-soc@4000f000 {

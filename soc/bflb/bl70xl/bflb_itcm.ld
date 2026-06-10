@@ -33,8 +33,8 @@ _rom_data_run = .;
 . = . + ROM_DATA_SIZE;
 __global_pointer$ = _rom_data_run + 0x800;
 
-PROVIDE(_rom_data_load = ROM_DATA_LOAD);
-PROVIDE(_rom_data_size = ROM_DATA_SIZE);
+PROVIDE(_rom_data_load = ABSOLUTE(ROM_DATA_LOAD));
+PROVIDE(_rom_data_size = ABSOLUTE(ROM_DATA_SIZE));
 
 /*
  * GP-relative symbols from rom_map.ld needed by ROM extension objects.

@@ -19,3 +19,13 @@ endif()
 zephyr_sources(
 power.c
 )
+
+# Header is referenced by the per-SoC PDS driver (for HBN-RTC macros) even when
+# the shared sources are not compiled, so keep the include path unconditional.
+zephyr_include_directories(pds)
+
+if(CONFIG_BFLB_PDS)
+  zephyr_sources(
+    pds/pds_bflb_time.c
+  )
+endif()

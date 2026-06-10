@@ -1,0 +1,69 @@
+# Copyright The Zephyr Project Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+title: Bouffalolab Power Down Sleep (PDS) controller
+
+description: |
+  The PDS block is a memory-mapped sleep/power-gating controller present on
+  all Bouffalolab SoCs (BL60x, BL70x, BL70xL, BL61x, BL618, BL808). It
+  owns a small bank of control registers that select which power domains
+  to gate or power off, a 32 kHz sleep counter, a programmable set of
+  wake sources, and a dedicated CLIC interrupt line.
+
+  The driver backing this binding is the SoC entry/exit path for Zephyr
+  power-states declared under cpus/*/cpu-power-states. When the PM
+  framework decides the CPU should enter a deep state, it calls into the
+  PDS driver, which composes a per-level configuration, arms the wake
+  source, and issues wfi. On wake (either abort or full reset) the
+  driver restores clock, flash XIP and CPU state and hands control back
+  to the kernel.
+
+  The per-level control word is SoC-specific because the bit meanings
+  inside PDS_CTL differ across the family; those tables live in the SoC
+  layer, not the binding.
+
+compatible: "bflb,pds"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+    description: |
+      PDS wake-up interrupt line (e.g. CLIC irq 66 on BL70xL).
+
+  interrupt-names:
+    required: true
+    description: |
+      Must include "wakeup" for the main PDS wake interrupt.
+
+  wakeup-gpios:
+    type: phandle-array
+    description: |
+      GPIO pins that can wake the SoC from PDS sleep. The wake trigger
+      depends on which power domain the pin belongs to and the driver
+      does not use the active-level flag:
+        - HBN-domain pins (GPIO 9-13, 30-31) wake on a falling edge
+          (asynchronous), routed through the HBN wake logic.
+        - All other pins are armed as PDS IO wake sources with
+          both-edge detection.
+
+examples:
+  - |
+    /*
+     * BL70xL PDS peripheral: reg block at 0x4000e000, wake on
+     * CLIC interrupt 66. Boards set status = "okay" to use
+     * deep-sleep states, or "disabled" to fall back to CPU idle.
+     */
+    pds: power-downsleep@4000e000 {
+            compatible = "bflb,pds";
+            reg = <0x4000e000 0x1000>;
+            interrupts = <66 0>;
+            interrupt-parent = <&clic>;
+            interrupt-names = "wakeup";
+            status = "okay";
+    };

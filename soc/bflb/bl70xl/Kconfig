@@ -1,6 +1,38 @@
 # Copyright The Zephyr Project Contributors
 # SPDX-License-Identifier: Apache-2.0
 
+choice BFLB_BL70XL_SILICON_REV
+	prompt "BL70XL silicon revision"
+	default BFLB_BL70XL_REV_A1
+	depends on SOC_SERIES_BL70XL
+	help
+	  Select the BL70XL silicon revision. Affects ROM data layout
+	  (bflb_itcm.ld) and the rom_a0/rom_a1 blob selected by the HAL
+	  when BLE is enabled. Applies to any BL70XL subsystem that
+	  cares about silicon rev, not just Bluetooth.
+
+config BFLB_BL70XL_REV_A0
+	bool "A0"
+
+config BFLB_BL70XL_REV_A1
+	bool "A1"
+
+endchoice
+
+config BL70XL_PDS_S2RAM
+	def_bool PM && DT_HAS_BFLB_PDS_ENABLED
+	select BFLB_PDS
+	select PM_S2RAM
+	select PM_DEVICE
+	select FLASH
+	select SOC_FLASH_BFLB
+	help
+	  Enable PDS Level 31 (full SoC reset on wakeup) under Zephyr's
+	  suspend-to-RAM framework. CPU register save/restore goes through
+	  arch_pm_s2ram_suspend(); this driver handles the BL70xL-specific
+	  HBN fastboot flag and peripheral suspend/restore. Selects
+	  PM_DEVICE so peripheral drivers are suspended/resumed.
+
 config SOC_SERIES_BL70XL
 	select ATOMIC_OPERATIONS_C
 	select CACHE_MANAGEMENT
@@ -10,6 +42,7 @@ config SOC_SERIES_BL70XL
 	select CPU_HAS_DCACHE
 	select FPU
 	select GEN_IRQ_VECTOR_TABLE
+	select HAS_PM
 	select INCLUDE_RESET_VECTOR
 	select OTP
 	select REGULATOR

@@ -25,6 +25,8 @@
 #include <hbn_reg.h>
 #include <l1c_reg.h>
 
+#include "bl70xl_rom_api.h"
+
 /*
  * mtime register address from device tree.
  * On BL702L with CLIC_THEAD_SEPARATED_LAYOUT, CLIC_HART0_ADDR points to the
@@ -234,34 +236,46 @@ uint8_t bl_wireless_capcode_tcal_en_get(void)
 	return capcode_tcal_en;
 }
 
-/*
- * The controller blob uses bl_rtc_* for timestamping.
- * Map to the RISC-V machine timer (mtime).
- */
+/* HBN RTC is a 40-bit counter */
+#define HBN_RTC_COUNTER_BITS 40U
+#define HBN_RTC_COUNTER_MASK GENMASK64(HBN_RTC_COUNTER_BITS - 1U, 0)
+#define HBN_RTC_COUNTER_WRAP BIT64(HBN_RTC_COUNTER_BITS)
+
 uint64_t bl_rtc_get_counter(void)
 {
-	uint32_t hi, lo, hi2;
+	uint32_t lo, hi;
 
-	do {
-		hi = sys_read32(MTIME_HI);
-		lo = sys_read32(MTIME_LO);
-		hi2 = sys_read32(MTIME_HI);
-	} while (hi != hi2);
-
+	HBN_Get_RTC_Timer_Val(&lo, &hi);
 	return ((uint64_t)hi << 32) | lo;
 }
 
 uint64_t bl_rtc_get_delta_counter(uint64_t ref)
 {
-	return bl_rtc_get_counter() - ref;
+	uint64_t cnt = bl_rtc_get_counter();
+
+	ref &= HBN_RTC_COUNTER_MASK;
+	if (cnt < ref) {
+		cnt += HBN_RTC_COUNTER_WRAP;
+	}
+	return cnt - ref;
 }
 
-uint32_t bl_rtc_get_aligned_counter(void)
+uint64_t bl_rtc_get_aligned_counter(void)
 {
-	return (uint32_t)bl_rtc_get_counter();
+	uint32_t lo0, lo, hi;
+
+	HBN_Get_RTC_Timer_Val(&lo0, &hi);
+	do {
+		HBN_Get_RTC_Timer_Val(&lo, &hi);
+	} while (lo == lo0);
+	return ((uint64_t)hi << 32) | lo;
 }
 
-/* Busy-wait delay shims, called by the BLE controller blob. */
+uint64_t bl_timer_now_us64(void)
+{
+	return k_cyc_to_us_floor64(k_cycle_get_64());
+}
+
 void BL702L_Delay_US(uint32_t cnt)
 {
 	k_busy_wait(cnt);
@@ -377,25 +391,16 @@ uint64_t rom_bl_rtc_get_aligned_counter(void)
 	return bl_rtc_get_counter();
 }
 
-/*
- * RTC frequency: BL702L uses RC32K (32000 Hz) by default.
- * bl_rtc_frequency is a GP-relative variable set by ble_rwdata.ld.
- * The mtime runs at sys_clock_hw_cycles_per_sec(), but these ROM RTC
- * functions operate on the 32kHz RTC domain counter. Since we map
- * bl_rtc_get_counter() to mtime, we convert using the mtime frequency.
- */
+#define BL_RTC_HZ 32768U
+
 uint32_t rom_bl_rtc_counter_to_ms(uint32_t cnt)
 {
-	uint32_t freq = sys_clock_hw_cycles_per_sec();
-
-	return (uint32_t)((uint64_t)cnt * 1000 / freq);
+	return (uint32_t)((uint64_t)cnt * 1000 / BL_RTC_HZ);
 }
 
 uint32_t rom_bl_rtc_ms_to_counter(uint32_t ms)
 {
-	uint32_t freq = sys_clock_hw_cycles_per_sec();
-
-	return (uint32_t)((uint64_t)ms * freq / 1000);
+	return (uint32_t)((uint64_t)ms * BL_RTC_HZ / 1000);
 }
 
 /*

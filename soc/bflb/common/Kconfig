@@ -1,0 +1,9 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config BFLB_PDS
+	bool
+	help
+	  Shared, SoC-agnostic parts of the BFLB PDS deep-sleep support
+	  (HBN-RTC/mtimer timekeeping, RC32K calibration policy, gpio-keys
+	  wake reporting). Selected by a per-SoC PDS implementation.

@@ -22,6 +22,7 @@ _hbn_run_size = SIZEOF(.hbn_code);
 SECTION_DATA_PROLOGUE(.retention_noinit,(NOLOAD),)
 {
 	*(.retention_noinit .retention_noinit.*)
+	*(.pds_retain_noinit .pds_retain_noinit.*)
 } GROUP_NOLOAD_LINK_IN(RETRAM, RETRAM)
 
 /*
