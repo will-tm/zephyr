@@ -10,6 +10,7 @@
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/reset.h>
+#include <zephyr/pm/device.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(pwm_bflb, CONFIG_PWM_LOG_LEVEL);
 
@@ -31,6 +32,13 @@ struct pwm_bflb_config {
 
 struct pwm_bflb_data {
 	uint16_t period_cycles[CHANNELS];
+#ifdef CONFIG_PM_DEVICE
+	uint32_t pm_config[CHANNELS];
+	uint32_t pm_clkdiv[CHANNELS];
+	uint32_t pm_period[CHANNELS];
+	uint32_t pm_thre1[CHANNELS];
+	uint32_t pm_thre2[CHANNELS];
+#endif
 };
 
 static int pwm_bflb_get_cycles_per_sec(const struct device *dev, uint32_t ch, uint64_t *cycles)
@@ -176,16 +184,56 @@ static int pwm_bflb_init(const struct device *dev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_DEVICE
+static int pwm_bflb_pm_control(const struct device *dev, enum pm_device_action action)
+{
+	const struct pwm_bflb_config *cfg = dev->config;
+	struct pwm_bflb_data *data = dev->data;
+	uint32_t ch_off;
+	int err;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_SUSPEND:
+		for (uint32_t ch = 0U; ch < CHANNELS; ch++) {
+			ch_off = ch * PWM_CH_OFFSET_MUL;
+			data->pm_config[ch] = sys_read32(cfg->base + PWM0_CONFIG_OFFSET + ch_off);
+			data->pm_clkdiv[ch] = sys_read32(cfg->base + PWM0_CLKDIV_OFFSET + ch_off);
+			data->pm_period[ch] = sys_read32(cfg->base + PWM0_PERIOD_OFFSET + ch_off);
+			data->pm_thre1[ch] = sys_read32(cfg->base + PWM0_THRE1_OFFSET + ch_off);
+			data->pm_thre2[ch] = sys_read32(cfg->base + PWM0_THRE2_OFFSET + ch_off);
+		}
+		return 0;
+	case PM_DEVICE_ACTION_RESUME:
+		err = pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_DEFAULT);
+		if (err) {
+			return err;
+		}
+		for (uint32_t ch = 0U; ch < CHANNELS; ch++) {
+			ch_off = ch * PWM_CH_OFFSET_MUL;
+			sys_write32(data->pm_clkdiv[ch], cfg->base + PWM0_CLKDIV_OFFSET + ch_off);
+			sys_write32(data->pm_period[ch], cfg->base + PWM0_PERIOD_OFFSET + ch_off);
+			sys_write32(data->pm_thre1[ch], cfg->base + PWM0_THRE1_OFFSET + ch_off);
+			sys_write32(data->pm_thre2[ch], cfg->base + PWM0_THRE2_OFFSET + ch_off);
+			sys_write32(data->pm_config[ch], cfg->base + PWM0_CONFIG_OFFSET + ch_off);
+		}
+		return 0;
+	default:
+		return -ENOTSUP;
+	}
+}
+#endif /* CONFIG_PM_DEVICE */
+
 #define PWM_BFLB_INIT(idx)									   \
 												   \
 	PINCTRL_DT_INST_DEFINE(idx);								   \
+	PM_DEVICE_DT_INST_DEFINE(idx, pwm_bflb_pm_control);					   \
 	static const struct pwm_bflb_config pwm_bflb_config_##idx = {				   \
 		.base = DT_INST_REG_ADDR(idx),							   \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(idx),					   \
 	};											   \
 	static struct pwm_bflb_data pwm_bflb_data_##idx = { 0 };				   \
 												   \
-	DEVICE_DT_INST_DEFINE(idx, pwm_bflb_init, NULL,						   \
+	DEVICE_DT_INST_DEFINE(idx, pwm_bflb_init, PM_DEVICE_DT_INST_GET(idx),			   \
 			      &pwm_bflb_data_##idx, &pwm_bflb_config_##idx, POST_KERNEL,	   \
 			      CONFIG_PWM_INIT_PRIORITY, &pwm_bflb_driver_api);
 

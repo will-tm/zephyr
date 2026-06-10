@@ -11,6 +11,7 @@
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/irq.h>
+#include <zephyr/pm/device.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(spi_bflb, CONFIG_SPI_LOG_LEVEL);
@@ -491,6 +492,23 @@ static int spi_bflb_init(const struct device *dev)
 	return rc;
 }
 
+#ifdef CONFIG_PM_DEVICE
+static int spi_bflb_pm_control(const struct device *dev, enum pm_device_action action)
+{
+	const struct spi_bflb_cfg *cfg = dev->config;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		/* Deep sleep may reset pin mux; SPI reconfigures per-transaction. */
+		return pinctrl_apply_state(cfg->pincfg, PINCTRL_STATE_DEFAULT);
+	case PM_DEVICE_ACTION_SUSPEND:
+		return 0;
+	default:
+		return -ENOTSUP;
+	}
+}
+#endif /* CONFIG_PM_DEVICE */
+
 #ifdef CONFIG_DEVICE_DEINIT_SUPPORT
 static int spi_bflb_deinit(const struct device *dev)
 {
@@ -591,6 +609,7 @@ static DEVICE_API(spi, spi_bflb_driver_api) = {
 
 #define SPI_BFLB_INIT(n)                                                                           \
 	PINCTRL_DT_INST_DEFINE(n);                                                                 \
+	PM_DEVICE_DT_INST_DEFINE(n, spi_bflb_pm_control);                                          \
 	SPI_BFLB_IRQ_HANDLER_DECL(n)                                                               \
 	static struct spi_bflb_data spi##n##_bflb_data = {                                         \
 		SPI_CONTEXT_INIT_LOCK(spi##n##_bflb_data, ctx),                                    \
@@ -604,7 +623,7 @@ static DEVICE_API(spi, spi_bflb_driver_api) = {
 	};                                                                                         \
 	DEVICE_DT_INST_DEINIT_DEFINE(n,                                                            \
 			spi_bflb_init, spi_bflb_deinit,                                            \
-			NULL,                                                                      \
+			PM_DEVICE_DT_INST_GET(n),                                                  \
 			&spi##n##_bflb_data,                                                       \
 			&spi_bflb_cfg_##n,                                                         \
 			POST_KERNEL,                                                               \

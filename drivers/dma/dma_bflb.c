@@ -10,6 +10,7 @@
 #include <soc.h>
 #include <zephyr/drivers/dma.h>
 #include <zephyr/cache.h>
+#include <zephyr/pm/device.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(dma_bflb, CONFIG_DMA_LOG_LEVEL);
@@ -412,6 +413,60 @@ static int dma_bflb_init(const struct device *dev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_DEVICE
+static int dma_bflb_pm_control(const struct device *dev, enum pm_device_action action)
+{
+	const struct dma_bflb_config *cfg = dev->config;
+	struct dma_bflb_data *data = dev->data;
+	uint32_t tmp;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_SUSPEND:
+		/* Abort active transfers — deep sleep resets DMA state. */
+		for (uint32_t i = 0U; i < BFLB_DMA_CH_NB; i++) {
+			tmp = sys_read32(cfg->base_reg + DMA_CxCONFIG_OFFSET +
+					 BFLB_DMA_CH_OFFSET(i));
+			if ((tmp & DMA_E) != 0U) {
+				tmp &= ~DMA_E;
+				sys_write32(tmp, cfg->base_reg + DMA_CxCONFIG_OFFSET +
+						 BFLB_DMA_CH_OFFSET(i));
+				if (data->channels[i].cb != NULL) {
+					data->channels[i].cb(dev, data->channels[i].user_data,
+							     i, -ECANCELED);
+				}
+			}
+		}
+		return 0;
+	case PM_DEVICE_ACTION_RESUME:
+		/* Re-enable DMA peripheral clock and controller. Per-channel
+		 * config must be re-issued by the user via dma_config() + start.
+		 */
+		tmp = sys_read32(BFLB_DMA_CLOCK_ADDR);
+		tmp |= (uint32_t)BIT_MASK(BFLB_DMA_CH_NB) << GLB_DMA_CLK_EN_POS;
+		sys_write32(tmp, BFLB_DMA_CLOCK_ADDR);
+
+		tmp = sys_read32(cfg->base_reg + DMA_TOP_CONFIG_OFFSET);
+		tmp |= DMA_E;
+		sys_write32(tmp, cfg->base_reg + DMA_TOP_CONFIG_OFFSET);
+
+		for (uint32_t i = 0U; i < BFLB_DMA_CH_NB; i++) {
+			tmp = sys_read32(cfg->base_reg + DMA_CxCONFIG_OFFSET +
+					 BFLB_DMA_CH_OFFSET(i));
+			tmp &= ~DMA_E;
+			tmp |= DMA_ITC | DMA_IE;
+			sys_write32(tmp, cfg->base_reg + DMA_CxCONFIG_OFFSET +
+					 BFLB_DMA_CH_OFFSET(i));
+		}
+
+		sys_write32(0xFFU, cfg->base_reg + DMA_INTERRCLR_OFFSET);
+		sys_write32(0xFFU, cfg->base_reg + DMA_INTTCCLEAR_OFFSET);
+		return 0;
+	default:
+		return -ENOTSUP;
+	}
+}
+#endif /* CONFIG_PM_DEVICE */
+
 static struct dma_bflb_data bflb_dma_data = {0};
 static struct dma_bflb_config bflb_dma_config = {
 	.base_reg = DT_INST_REG_ADDR(0),
@@ -425,6 +480,8 @@ static DEVICE_API(dma, dma_bflb_api) = {
 	.get_status = dma_bflb_get_status,
 };
 
-DEVICE_DT_INST_DEFINE(0, dma_bflb_init, NULL,
+PM_DEVICE_DT_INST_DEFINE(0, dma_bflb_pm_control);
+
+DEVICE_DT_INST_DEFINE(0, dma_bflb_init, PM_DEVICE_DT_INST_GET(0),
 		      &bflb_dma_data, &bflb_dma_config, PRE_KERNEL_1,
 		      CONFIG_DMA_INIT_PRIORITY, &dma_bflb_api);

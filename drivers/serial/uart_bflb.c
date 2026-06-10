@@ -519,12 +519,26 @@ static int uart_bflb_pm_control(const struct device *dev,
 			return -EINVAL;
 		}
 		sys_write32(tmp, GLB_BASE + GLB_CGEN_CFG1_OFFSET);
+
+		uart_bflb_configure(dev);
+#ifdef CONFIG_UART_INTERRUPT_DRIVEN
+		sys_write32(0x0, cfg->base_reg + UART_INT_EN_OFFSET);
+		sys_write32(0xFF, cfg->base_reg + UART_INT_CLEAR_OFFSET);
+		sys_write32(0xFFFFFFFFU, cfg->base_reg + UART_INT_MASK_OFFSET);
+		sys_write32(0xFF, cfg->base_reg + UART_INT_EN_OFFSET);
+#endif
+		uart_bflb_enabled(dev, 1);
 		break;
 	case PM_DEVICE_ACTION_SUSPEND:
+		while ((sys_read32(cfg->base_reg + UART_STATUS_OFFSET) &
+			UART_STS_UTX_BUS_BUSY) != 0U) {
+		}
+
 		ret = pinctrl_apply_state(cfg->pincfg, PINCTRL_STATE_SLEEP);
-		if (ret < 0) {
+		if (ret < 0 && ret != -ENOENT) {
 			return ret;
 		}
+
 		tmp = sys_read32(GLB_BASE + GLB_CGEN_CFG1_OFFSET);
 		/* Gate clock to peripheral */
 		if (cfg->base_reg == UART0_BASE) {
@@ -539,7 +553,7 @@ static int uart_bflb_pm_control(const struct device *dev,
 		sys_write32(tmp, GLB_BASE + GLB_CGEN_CFG1_OFFSET);
 		break;
 	default:
-		return -EINVAL;
+		return -ENOTSUP;
 	}
 
 	return 0;

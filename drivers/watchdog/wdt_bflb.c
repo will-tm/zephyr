@@ -7,6 +7,7 @@
 
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/irq.h>
+#include <zephyr/pm/device.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
 
@@ -36,6 +37,9 @@ struct wdt_bflb_data {
 	uint16_t match_value;
 	bool reset_mode;
 	bool configured;
+#ifdef CONFIG_PM_DEVICE
+	bool was_enabled;
+#endif
 };
 
 static inline void wdt_bflb_unlock(uintptr_t base)
@@ -210,6 +214,33 @@ static int wdt_bflb_init(const struct device *dev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_DEVICE
+static int wdt_bflb_pm_control(const struct device *dev, enum pm_device_action action)
+{
+	const struct wdt_bflb_config *cfg = dev->config;
+	struct wdt_bflb_data *data = dev->data;
+	uint32_t tmp;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_SUSPEND:
+		tmp = sys_read32(cfg->base + TIMER_WMER_OFFSET);
+		data->was_enabled = ((tmp & TIMER_WE) != 0U);
+		if (data->was_enabled) {
+			(void)wdt_bflb_disable(dev);
+		}
+		return 0;
+	case PM_DEVICE_ACTION_RESUME:
+		if (data->was_enabled) {
+			data->was_enabled = false;
+			return wdt_bflb_setup(dev, 0);
+		}
+		return 0;
+	default:
+		return -ENOTSUP;
+	}
+}
+#endif /* CONFIG_PM_DEVICE */
+
 static DEVICE_API(wdt, wdt_bflb_api) = {
 	.setup = wdt_bflb_setup,
 	.disable = wdt_bflb_disable,
@@ -232,7 +263,10 @@ static DEVICE_API(wdt, wdt_bflb_api) = {
 		.irq_config = wdt_bflb_irq_config_##n,                                             \
 	};                                                                                         \
                                                                                                    \
-	DEVICE_DT_INST_DEFINE(n, wdt_bflb_init, NULL, &wdt_bflb_data_##n, &wdt_bflb_config_##n,    \
-			      POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &wdt_bflb_api);
+	PM_DEVICE_DT_INST_DEFINE(n, wdt_bflb_pm_control);                                          \
+                                                                                                   \
+	DEVICE_DT_INST_DEFINE(n, wdt_bflb_init, PM_DEVICE_DT_INST_GET(n), &wdt_bflb_data_##n,      \
+			      &wdt_bflb_config_##n, POST_KERNEL,                                   \
+			      CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &wdt_bflb_api);
 
 DT_INST_FOREACH_STATUS_OKAY(WDT_BFLB_INIT)

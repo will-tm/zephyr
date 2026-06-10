@@ -9,6 +9,7 @@
 
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/irq.h>
+#include <zephyr/pm/device.h>
 #include <zephyr/dt-bindings/pinctrl/bflb-common-pinctrl.h>
 #include <zephyr/drivers/gpio/gpio_utils.h>
 
@@ -33,6 +34,11 @@
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(gpio_bl60x_bl70x);
+
+#ifdef CONFIG_BL70XL_PDS_S2RAM
+/* Pins that caused the last PDS deep-sleep wake, latched by the PDS driver. */
+extern uint32_t bflb_pds_wakeup_pins;
+#endif
 
 #define GPIO_BFLB_FUNCTION_GPIO 11
 /* Medium drive strength, 0 to 3 */
@@ -64,6 +70,12 @@ LOG_MODULE_REGISTER(gpio_bl60x_bl70x);
 #define GPIO_BFLB_BL70X_PSRAM_END   28
 #define GPIO_BFLB_BL70X_PIN_OFFSET  9
 
+#if defined(CONFIG_SOC_SERIES_BL70XL) && defined(CONFIG_PM_DEVICE)
+#define GPIO_BFLB_NUM_CFG_REGS       16U
+#define GPIO_BFLB_NUM_INT_MODE_REGS  4U
+#define GPIO_BFLB_REG_STRIDE         ((uint32_t)sizeof(uint32_t))
+#endif
+
 #define GLB_GPIO_CFG_OFFSET(pin) \
 	GLB_GPIO_CFGCTL0_OFFSET + ((pin) / GPIO_BFLB_PIN_PER_WORD * GPIO_BFLB_WORDSIZE)
 
@@ -82,6 +94,13 @@ struct gpio_bflb_data {
 	/* gpio_driver_data needs to be first */
 	struct gpio_driver_data common;
 	sys_slist_t callbacks;
+#if defined(CONFIG_SOC_SERIES_BL70XL) && defined(CONFIG_PM_DEVICE)
+	uint32_t pm_cfgctl[GPIO_BFLB_NUM_CFG_REGS];
+	uint32_t pm_output_val;
+	uint32_t pm_output_en;
+	uint32_t pm_int_mask;
+	uint32_t pm_int_mode[GPIO_BFLB_NUM_INT_MODE_REGS];
+#endif
 };
 
 
@@ -354,6 +373,60 @@ static int gpio_bflb_manage_callback(const struct device *port,
 	return gpio_manage_callback(&(data->callbacks), callback, set);
 }
 
+#if defined(CONFIG_SOC_SERIES_BL70XL) && defined(CONFIG_PM_DEVICE)
+static int gpio_bflb_pm_control(const struct device *dev, enum pm_device_action action)
+{
+	const struct gpio_bflb_config *const cfg = dev->config;
+	struct gpio_bflb_data *data = dev->data;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_SUSPEND:
+		for (uint32_t i = 0U; i < GPIO_BFLB_NUM_CFG_REGS; i++) {
+			data->pm_cfgctl[i] = sys_read32(cfg->base_reg +
+				GLB_GPIO_CFGCTL0_OFFSET + i * GPIO_BFLB_REG_STRIDE);
+		}
+		data->pm_output_val = sys_read32(cfg->base_reg + GLB_GPIO_CFGCTL32_OFFSET);
+		data->pm_output_en = sys_read32(cfg->base_reg + GLB_GPIO_CFGCTL34_OFFSET);
+		data->pm_int_mask = sys_read32(cfg->base_reg + GLB_GPIO_INT_MASK1_OFFSET);
+		for (uint32_t i = 0U; i < GPIO_BFLB_NUM_INT_MODE_REGS; i++) {
+			data->pm_int_mode[i] = sys_read32(cfg->base_reg +
+				GLB_GPIO_INT_MODE_SET1_OFFSET + i * GPIO_BFLB_REG_STRIDE);
+		}
+		return 0;
+
+	case PM_DEVICE_ACTION_RESUME:
+		for (uint32_t i = 0U; i < GPIO_BFLB_NUM_CFG_REGS; i++) {
+			sys_write32(data->pm_cfgctl[i], cfg->base_reg +
+				GLB_GPIO_CFGCTL0_OFFSET + i * GPIO_BFLB_REG_STRIDE);
+		}
+		sys_write32(data->pm_output_val, cfg->base_reg + GLB_GPIO_CFGCTL32_OFFSET);
+		sys_write32(data->pm_output_en, cfg->base_reg + GLB_GPIO_CFGCTL34_OFFSET);
+		for (uint32_t i = 0U; i < GPIO_BFLB_NUM_INT_MODE_REGS; i++) {
+			sys_write32(data->pm_int_mode[i], cfg->base_reg +
+				GLB_GPIO_INT_MODE_SET1_OFFSET + i * GPIO_BFLB_REG_STRIDE);
+		}
+		sys_write32(UINT32_MAX, cfg->base_reg + GLB_GPIO_INT_CLR1_OFFSET);
+		sys_write32(0U, cfg->base_reg + GLB_GPIO_INT_CLR1_OFFSET);
+		sys_write32(data->pm_int_mask, cfg->base_reg + GLB_GPIO_INT_MASK1_OFFSET);
+		cfg->irq_enable_func(dev);
+#ifdef CONFIG_BL70XL_PDS_S2RAM
+		/* The wake edge was caught by the always-on HBN/PDS logic, not the
+		 * GPIO controller, so dispatch it to registered callbacks as if a
+		 * normal GPIO interrupt had fired.
+		 */
+		if (bflb_pds_wakeup_pins != 0U) {
+			gpio_fire_callbacks(&data->callbacks, dev, bflb_pds_wakeup_pins);
+			bflb_pds_wakeup_pins = 0U;
+		}
+#endif
+		return 0;
+
+	default:
+		return -ENOTSUP;
+	}
+}
+#endif /* CONFIG_SOC_SERIES_BL70XL && CONFIG_PM_DEVICE */
+
 static DEVICE_API(gpio, gpio_bflb_api) = {
 	.pin_configure = gpio_bflb_config,
 	.port_get_raw = gpio_bflb_port_get_raw,
@@ -364,6 +437,15 @@ static DEVICE_API(gpio, gpio_bflb_api) = {
 	.pin_interrupt_configure = gpio_bflb_pin_interrupt_configure,
 	.manage_callback = gpio_bflb_manage_callback,
 };
+
+#if defined(CONFIG_SOC_SERIES_BL70XL) && defined(CONFIG_PM_DEVICE)
+#define GPIO_BFLB_PM_DEVICE_DEFINE(n) \
+	PM_DEVICE_DT_INST_DEFINE(n, gpio_bflb_pm_control)
+#define GPIO_BFLB_PM_DEVICE_GET(n)    PM_DEVICE_DT_INST_GET(n)
+#else
+#define GPIO_BFLB_PM_DEVICE_DEFINE(n)
+#define GPIO_BFLB_PM_DEVICE_GET(n)    NULL
+#endif
 
 #define GPIO_BFLB_INIT(n)							\
 	static void port_##n##_bflb_irq_config_func(const struct device *dev);	\
@@ -378,7 +460,9 @@ static DEVICE_API(gpio, gpio_bflb_api) = {
 										\
 	static struct gpio_bflb_data port_##n##_bflb_data;			\
 										\
-	DEVICE_DT_INST_DEFINE(n, gpio_bflb_init, NULL,				\
+	GPIO_BFLB_PM_DEVICE_DEFINE(n);						\
+										\
+	DEVICE_DT_INST_DEFINE(n, gpio_bflb_init, GPIO_BFLB_PM_DEVICE_GET(n),	\
 			    &port_##n##_bflb_data,				\
 			    &port_##n##_bflb_config, PRE_KERNEL_1,		\
 			    CONFIG_GPIO_INIT_PRIORITY,				\

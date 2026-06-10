@@ -13,6 +13,7 @@
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/ring_buffer.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/pm/device.h>
 #include <zephyr/dt-bindings/clock/bflb_clock_common.h>
 
 #include <zephyr/logging/log.h>
@@ -713,6 +714,26 @@ static int i2c_bflb_init(const struct device *dev)
 	return err;
 }
 
+#ifdef CONFIG_PM_DEVICE
+static int i2c_bflb_pm_control(const struct device *dev, enum pm_device_action action)
+{
+	const struct i2c_bflb_cfg *config = dev->config;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		/* Deep sleep may reset peripheral registers. */
+		pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
+		i2c_bflb_configure(dev,
+				   I2C_MODE_CONTROLLER | I2C_SPEED_SET(I2C_SPEED_DT));
+		return 0;
+	case PM_DEVICE_ACTION_SUSPEND:
+		return 0;
+	default:
+		return -ENOTSUP;
+	}
+}
+#endif /* CONFIG_PM_DEVICE */
+
 #ifdef CONFIG_DEVICE_DEINIT_SUPPORT
 static int i2c_bflb_deinit(const struct device *dev)
 {
@@ -778,6 +799,7 @@ static DEVICE_API(i2c, i2c_bflb_api) = {
 
 #define I2C_BFLB_INIT(n) \
 	PINCTRL_DT_INST_DEFINE(n);					\
+	PM_DEVICE_DT_INST_DEFINE(n, i2c_bflb_pm_control);		\
 	I2C_BFLB_IRQ_HANDLER_DECL(n)					\
 	static struct i2c_bflb_data i2c##n##_bflb_data;			\
 	static const struct i2c_bflb_cfg i2c_bflb_cfg_##n = {		\
@@ -788,7 +810,7 @@ static DEVICE_API(i2c, i2c_bflb_api) = {
 	};								\
 	I2C_DEVICE_DT_INST_DEINIT_DEFINE(n,				\
 			    i2c_bflb_init, i2c_bflb_deinit,		\
-			    NULL,					\
+			    PM_DEVICE_DT_INST_GET(n),			\
 			    &i2c##n##_bflb_data,			\
 			    &i2c_bflb_cfg_##n,				\
 			    POST_KERNEL,				\
