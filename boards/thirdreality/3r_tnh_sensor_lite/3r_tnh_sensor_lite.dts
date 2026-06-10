@@ -48,6 +48,7 @@
 
 	buttons {
 		compatible = "gpio-keys";
+		wakeup-source;
 
 		button_0: sw0 {
 			gpios = <&gpio0 13 GPIO_ACTIVE_LOW>;
@@ -147,4 +148,9 @@
 
 &bt_hci_bflb {
 	status = "okay";
+};
+
+&pds {
+	status = "okay";
+	wakeup-gpios = <&gpio0 13 GPIO_ACTIVE_LOW>;
 };
