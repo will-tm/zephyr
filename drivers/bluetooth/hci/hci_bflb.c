@@ -291,6 +291,10 @@ static int bt_bflb_open(const struct device *dev)
 #endif
 	bflb_controller_init(CONFIG_BT_BFLB_CTLR_TASK_PRIO);
 
+#if defined(CONFIG_BL70XL_PDS_S2RAM)
+	btble_controller_sleep_init();
+#endif
+
 	hci_ret = bt_onchiphci_interface_init(controller_rx_cb);
 	if (hci_ret != 0) {
 		LOG_ERR("bt_onchiphci_interface_init failed: %u", hci_ret);

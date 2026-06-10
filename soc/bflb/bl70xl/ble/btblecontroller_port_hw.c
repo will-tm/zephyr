@@ -22,6 +22,8 @@
 #include <glb_reg.h>
 #include <ef_data_reg.h>
 
+#include "bl70xl_rom_api.h"
+
 /* Machine Software Interrupt — used by the BLE controller blob for deferred
  * context switch requests (FreeRTOS portYIELD equivalent).  Zephyr handles
  * rescheduling automatically, so we just clear the pending bit.
@@ -83,14 +85,6 @@ void btblecontroller_ble_irq_enable(uint8_t enable)
 		irq_disable(BLE_IRQn);
 	}
 }
-
-/*
- * btblecontroller_enable_ble_clk — Enable/disable BLE peripheral clock
- *
- * Implemented in bl_platform_shim.c as GLB_Set_BLE_CLK() which handles
- * the proper register sequencing for clock gate control.
- */
-extern uint32_t GLB_Set_BLE_CLK(uint8_t enable);
 
 void btblecontroller_enable_ble_clk(uint8_t enable)
 {

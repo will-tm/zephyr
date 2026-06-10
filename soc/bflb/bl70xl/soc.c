@@ -26,6 +26,9 @@
 extern char _hbn_load_start[];
 extern char _hbn_run_start[];
 extern char _hbn_run_size[];
+extern char _rom_data_run[];
+extern char _rom_data_load[];
+extern char _rom_data_size[];
 #endif
 
 void soc_early_init_hook(void)
@@ -77,5 +80,10 @@ void soc_early_init_hook(void)
 #if defined(CONFIG_BT_BFLB_BL70XL)
 	/* Copy .hbn_code from flash (LMA) to HBN RAM (VMA) */
 	memcpy(_hbn_run_start, _hbn_load_start, (size_t)_hbn_run_size);
+
+	/* Copy BLE controller GP-relative data from mask ROM to ITCM.
+	 * Required for PDS wakeup — the blob restores state from this area.
+	 */
+	memcpy(_rom_data_run, _rom_data_load, (size_t)_rom_data_size);
 #endif
 }

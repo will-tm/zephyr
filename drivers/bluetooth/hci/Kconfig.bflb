@@ -158,21 +158,6 @@ config BT_BFLB_BL70XL
 
 if BT_BFLB_BL70XL
 
-choice BFLB_BL70XL_SILICON_REV
-	prompt "BL70XL silicon revision"
-	default BFLB_BL70XL_REV_A1
-	help
-	  Select the BL70XL silicon revision. This determines the ROM
-	  data addresses used by the BLE controller binary blob.
-
-config BFLB_BL70XL_REV_A0
-	bool "A0"
-
-config BFLB_BL70XL_REV_A1
-	bool "A1"
-
-endchoice
-
 choice BFLB_BL70XL_BLE_VARIANT
 	prompt "BLE controller variant"
 	default BFLB_BL70XL_BLE_M8S1P if BT_HCI_RAW
