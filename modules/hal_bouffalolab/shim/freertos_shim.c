@@ -238,3 +238,182 @@ void vPortFree(void *pv)
 {
 	k_heap_free(&shim_heap, pv);
 }
+
+static unsigned int critical_keys[8];
+static int critical_depth;
+
+void vTaskEnterCritical(void)
+{
+	int depth = critical_depth;
+
+	if (depth < ARRAY_SIZE(critical_keys)) {
+		critical_keys[depth] = irq_lock();
+	}
+	critical_depth = depth + 1;
+}
+
+void vTaskExitCritical(void)
+{
+	critical_depth--;
+	if (critical_depth >= 0 && critical_depth < ARRAY_SIZE(critical_keys)) {
+		irq_unlock(critical_keys[critical_depth]);
+	}
+}
+
+#ifdef CONFIG_BFLB_ZIGBEE
+
+typedef void *TimerHandle_t;
+typedef void (*TimerCallbackFunction_t)(TimerHandle_t);
+
+struct bflb_timer {
+	struct k_timer ktimer;
+	TimerCallbackFunction_t callback;
+	void *timer_id;
+	const char *name;
+};
+
+static void timer_expiry_wrapper(struct k_timer *timer)
+{
+	struct bflb_timer *bt = CONTAINER_OF(timer, struct bflb_timer, ktimer);
+
+	if (bt->callback) {
+		bt->callback(bt);
+	}
+}
+
+TimerHandle_t xTimerCreate(const char *pcTimerName, uint32_t xTimerPeriodInTicks,
+			   uint32_t uxAutoReload, void *pvTimerID,
+			   TimerCallbackFunction_t pxCallbackFunction)
+{
+	struct bflb_timer *bt;
+
+	bt = k_heap_alloc(&shim_heap, sizeof(*bt), K_NO_WAIT);
+	if (bt == NULL) {
+		return NULL;
+	}
+	bt->callback = pxCallbackFunction;
+	bt->timer_id = pvTimerID;
+	bt->name = pcTimerName;
+	k_timer_init(&bt->ktimer, timer_expiry_wrapper, NULL);
+
+	if (xTimerPeriodInTicks > 0) {
+		if (uxAutoReload) {
+			k_timer_start(&bt->ktimer, K_MSEC(xTimerPeriodInTicks),
+				      K_MSEC(xTimerPeriodInTicks));
+		}
+	}
+
+	return bt;
+}
+
+#define tmrCOMMAND_START         1
+#define tmrCOMMAND_STOP          3
+#define tmrCOMMAND_CHANGE_PERIOD 4
+#define tmrCOMMAND_DELETE        5
+
+int32_t xTimerGenericCommand(TimerHandle_t xTimer, int32_t xCommandID,
+			     uint32_t xOptionalValue, int32_t *pxHigherPriorityTaskWoken,
+			     uint32_t xTicksToWait)
+{
+	struct bflb_timer *bt = (struct bflb_timer *)xTimer;
+
+	ARG_UNUSED(pxHigherPriorityTaskWoken);
+	ARG_UNUSED(xTicksToWait);
+
+	if (bt == NULL) {
+		return pdFAIL;
+	}
+
+	switch (xCommandID) {
+	case tmrCOMMAND_START:
+		if (xOptionalValue == 0) {
+			xOptionalValue = 1;
+		}
+		k_timer_start(&bt->ktimer, K_MSEC(xOptionalValue), K_NO_WAIT);
+		break;
+	case tmrCOMMAND_STOP:
+		k_timer_stop(&bt->ktimer);
+		break;
+	case tmrCOMMAND_CHANGE_PERIOD:
+		k_timer_start(&bt->ktimer, K_MSEC(xOptionalValue), K_NO_WAIT);
+		break;
+	case tmrCOMMAND_DELETE:
+		k_timer_stop(&bt->ktimer);
+		k_heap_free(&shim_heap, bt);
+		break;
+	default:
+		return pdFAIL;
+	}
+
+	return pdPASS;
+}
+
+void *pvTimerGetTimerID(TimerHandle_t xTimer)
+{
+	struct bflb_timer *bt = (struct bflb_timer *)xTimer;
+
+	return bt ? bt->timer_id : NULL;
+}
+
+int32_t xQueueSemaphoreTake(QueueHandle_t xQueue, uint32_t xTicksToWait)
+{
+	struct bflb_queue *q = (struct bflb_queue *)xQueue;
+	k_timeout_t timeout = ticks_to_timeout(xTicksToWait);
+
+	if (q->is_sem) {
+		return (k_sem_take(&q->sem, timeout) == 0) ? pdPASS : pdFAIL;
+	}
+	return pdFAIL;
+}
+
+QueueHandle_t xQueueGenericCreateStatic(uint32_t uxQueueLength, uint32_t uxItemSize,
+					uint8_t *pucQueueStorage, void *pxStaticQueue,
+					uint8_t ucQueueType)
+{
+	ARG_UNUSED(pucQueueStorage);
+	ARG_UNUSED(pxStaticQueue);
+	return xQueueGenericCreate(uxQueueLength, uxItemSize, ucQueueType);
+}
+
+int32_t xTaskGenericNotify(TaskHandle_t xTaskToNotify, uint32_t ulValue,
+			   int32_t eAction, uint32_t *pulPreviousNotificationValue)
+{
+	ARG_UNUSED(ulValue);
+	ARG_UNUSED(eAction);
+	ARG_UNUSED(pulPreviousNotificationValue);
+
+	struct bflb_thread *bt = (struct bflb_thread *)xTaskToNotify;
+
+	if (bt != NULL) {
+		k_wakeup(&bt->thread);
+	}
+	return pdPASS;
+}
+
+int32_t xTaskGenericNotifyFromISR(TaskHandle_t xTaskToNotify, uint32_t ulValue,
+				  int32_t eAction, uint32_t *pulPreviousNotificationValue,
+				  int32_t *pxHigherPriorityTaskWoken)
+{
+	ARG_UNUSED(pxHigherPriorityTaskWoken);
+	return xTaskGenericNotify(xTaskToNotify, ulValue, eAction,
+				  pulPreviousNotificationValue);
+}
+
+uint32_t ulTaskNotifyTake(int32_t xClearCountOnExit, uint32_t xTicksToWait)
+{
+	ARG_UNUSED(xClearCountOnExit);
+	k_sleep(ticks_to_timeout(xTicksToWait));
+	return 1;
+}
+
+TaskHandle_t xTaskGetCurrentTaskHandle(void)
+{
+	return NULL;
+}
+
+uint32_t xTaskGetTickCount(void)
+{
+	return (uint32_t)k_uptime_get();
+}
+
+#endif /* CONFIG_BFLB_ZIGBEE */

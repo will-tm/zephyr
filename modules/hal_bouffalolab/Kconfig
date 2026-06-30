@@ -34,3 +34,38 @@ config BFLB_SHIM_HEAP_SIZE
 	help
 	  Size in bytes of the dedicated memory pool used by the BLE
 	  controller shim layer for threads, stacks, and queues.
+
+menuconfig BFLB_ZIGBEE
+	bool "Bouffalo Lab Zigbee stack"
+	depends on SOC_SERIES_BL70XL
+	select BFLB_FREERTOS_SHIM
+	select DYNAMIC_INTERRUPTS
+	select CPP
+	select ENTROPY_GENERATOR
+	select FLASH
+	select HWINFO
+	help
+	  Enable the Bouffalo Lab proprietary Zigbee stack for BL702L.
+
+if BFLB_ZIGBEE
+
+config BFLB_ZIGBEE_LOG_LEVEL
+	int "Zigbee shim log level"
+	default 3
+	range 0 4
+
+config BFLB_ZIGBEE_HEAP_SIZE
+	int "Zigbee heap size"
+	default 32768
+	help
+	  Size in bytes of the heap used by the zigbee stack.
+
+config BFLB_ZIGBEE_FLASH_SIZE
+	hex "Flash size for zigbee persistent storage"
+	default 0x100000
+
+config BFLB_ZIGBEE_MANUFACTURER_ID
+	hex "Zigbee manufacturer ID"
+	default 0xFFFF
+
+endif # BFLB_ZIGBEE

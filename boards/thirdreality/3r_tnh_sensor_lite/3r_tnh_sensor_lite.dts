@@ -78,8 +78,7 @@
 &flashctrl {
 	flash0: flash@23000000 {
 		compatible = "soc-nv-flash", "zb,zb25d80d";
-		/* 1MB flash minus 8KB bootheader */
-		reg = <0x23000000 (DT_SIZE_K(1024) - DT_SIZE_K(8))>;
+		reg = <0x23000000 DT_SIZE_K(1024)>;
 		write-block-size = <1>;
 		erase-block-size = <DT_SIZE_K(4)>;
 
@@ -90,13 +89,13 @@
 
 			slot0_partition: partition@0 {
 				label = "image-0";
-				reg = <0x00000000 DT_SIZE_K(1008)>;
+				reg = <0x00000000 DT_SIZE_K(1004)>;
 				read-only;
 			};
 
-			storage_partition: partition@f8000 {
+			storage_partition: partition@fb000 {
 				label = "storage";
-				reg = <0x000f8000 DT_SIZE_K(8)>;
+				reg = <0x000fb000 DT_SIZE_K(20)>;
 			};
 		};
 	};
