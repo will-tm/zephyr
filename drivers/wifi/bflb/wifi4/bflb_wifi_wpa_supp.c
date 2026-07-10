@@ -49,6 +49,17 @@ LOG_MODULE_DECLARE(bflb_wifi, CONFIG_WIFI_LOG_LEVEL);
 
 #define CCMP_TK_LEN 16U
 
+/* Firmware key/port API cipher algo ids (supplicant_api.h's enum wpa_alg
+ * collides with hostap's, so the functions are declared directly below).
+ */
+#define BFLB_FW_ALG_CCMP 3
+#define BFLB_FW_ALG_IGTK 7
+
+extern bool bl_wifi_auth_done_internal(uint8_t sta_idx, uint16_t reason_code);
+extern int bl_wifi_set_sta_key_internal(uint8_t vif_idx, uint8_t sta_idx, int alg, int key_idx,
+					int set_tx, uint8_t *seq, size_t seq_len, uint8_t *key,
+					size_t key_len, bool pairwise);
+
 /* 802.11b/g basic rates in 100 kbps units. */
 static const unsigned short bg_rates_100kbps[] = {
 	10, 20, 55, 110, 60, 90, 120, 180, 240, 360, 480, 540,
@@ -58,15 +69,37 @@ struct bflb_supp_ctx g_supp_ctx;
 
 static struct zep_wpa_supp_dev_callbk_fns supp_cb;
 
-/* Firmware key/port API (supplicant_api.h's enum wpa_alg collides with
- * hostap's, so declare these directly).  BFLB_FW_ALG_CCMP = 3.
- */
-#define BFLB_FW_ALG_CCMP 3
-#define BFLB_FW_ALG_IGTK 7
-extern bool bl_wifi_auth_done_internal(uint8_t sta_idx, uint16_t reason_code);
-extern int bl_wifi_set_sta_key_internal(uint8_t vif_idx, uint8_t sta_idx, int alg, int key_idx,
-					int set_tx, uint8_t *seq, size_t seq_len, uint8_t *key,
-					size_t key_len, bool pairwise);
+static void connect_work_handler(struct k_work *work);
+static void *bflb_wpa_supp_init(void *supp_drv_if_ctx, const char *iface_name,
+				struct zep_wpa_supp_dev_callbk_fns *callbk_fns);
+static void bflb_wpa_supp_deinit(void *if_priv);
+static int bflb_wpa_supp_scan2(void *if_priv, struct wpa_driver_scan_params *params);
+static int bflb_wpa_supp_scan_abort(void *if_priv);
+static uint16_t bflb_channel_to_freq(uint8_t ch);
+static int bflb_wpa_supp_get_scan_results(void *if_priv);
+static int bflb_wpa_supp_authenticate(void *if_priv, struct wpa_driver_auth_params *params,
+				      struct wpa_bss *curr_bss);
+static void bflb_wpa_supp_fill_passphrase(struct bflb_supp_ctx *ctx);
+static int bflb_wpa_supp_associate(void *if_priv, struct wpa_driver_associate_params *params);
+static int bflb_wpa_supp_deauthenticate(void *if_priv, const char *addr,
+					unsigned short reason_code);
+static int bflb_wpa_supp_set_key(void *if_priv, const unsigned char *ifname, enum wpa_alg alg,
+				 const unsigned char *addr, int key_idx, int set_tx,
+				 const unsigned char *seq, size_t seq_len, const unsigned char *key,
+				 size_t key_len, enum key_flag key_flag);
+static int bflb_wpa_supp_set_supp_port(void *if_priv, int authorized, char *bssid);
+static int bflb_wpa_supp_signal_poll(void *if_priv, struct wpa_signal_info *si,
+				     unsigned char *bssid);
+static int bflb_wpa_supp_get_capa(void *if_priv, struct wpa_driver_capa *capa);
+static int bflb_wpa_supp_get_wiphy(void *if_priv);
+static int bflb_wpa_supp_set_country(void *priv, const char *alpha2);
+static int bflb_wpa_supp_get_country(void *priv, char *alpha2);
+static int bflb_wpa_supp_send_mlme(void *if_priv, const u8 *data, size_t data_len, int noack,
+				   unsigned int freq, int no_cck, int offchanok,
+				   unsigned int wait_time, int cookie);
+static int bflb_wpa_supp_get_conn_info(void *if_priv, struct wpa_conn_info *info);
+static int bflb_wpa_supp_register_frame(void *if_priv, u16 type, const u8 *match, size_t match_len,
+					bool multicast);
 
 /* Deferred connect: SM commands block on IPC confirmations, so the blob
  * connect runs on the system work queue instead of the supplicant thread.

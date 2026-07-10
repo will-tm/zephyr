@@ -58,6 +58,11 @@ static mbedtls_ccm_context ccmp_ctx;
 static bool ccmp_ready;
 static K_MUTEX_DEFINE(ccmp_lock);
 
+static void ccmp_make_nonce(uint8_t nonce[CCMP_NONCE_LEN], uint8_t prio,
+			    const uint8_t addr2[MAC_ADDR_LEN], uint64_t pn);
+static size_t ccmp_make_aad(uint8_t aad[CCMP_AAD_MAX], const uint8_t *mac_hdr, bool is_qos,
+			    bool has_a4, uint8_t qos_tid);
+
 /* CCMP nonce (IEEE 802.11-2020 Section 12.5.3.3.4): priority byte, A2, PN5..PN0. */
 static void ccmp_make_nonce(uint8_t nonce[CCMP_NONCE_LEN], uint8_t prio,
 			    const uint8_t addr2[MAC_ADDR_LEN], uint64_t pn)

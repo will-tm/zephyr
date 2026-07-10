@@ -23,7 +23,14 @@
 #include <ipc_shared.h>
 #include <supplicant_api.h>
 
-struct ipc_shared_env_tag ipc_shared_env;
+/* Place the stub shared env in the same WIFI_RAM section the blob would
+ * use so it doesn't count against the main RAM region.
+ */
+#if defined(CONFIG_SOC_SERIES_BL808)
+struct ipc_shared_env_tag ipc_shared_env Z_GENERIC_SECTION(.fw.SHRAMIPC);
+#else
+struct ipc_shared_env_tag ipc_shared_env Z_GENERIC_SECTION(SHAREDRAMIPC);
+#endif
 uint32_t ke_env;
 uint8_t rxl_cntrl_env[64];
 uint8_t vif_info_tab[2 * 1512];

@@ -12,7 +12,7 @@
 
 #include "bflb_wifi.h"
 
-#define BFLB_SCAN_AP_MAX     32U
+#define BFLB_SCAN_AP_MAX     ((uint8_t)CONFIG_BFLB_WIFI_SCAN_AP_MAX)
 #define BFLB_SCAN_RSN_IE_MAX 50U
 #define BFLB_SCAN_WPA_IE_MAX 40U
 

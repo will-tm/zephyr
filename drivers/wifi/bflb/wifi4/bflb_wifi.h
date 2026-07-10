@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/wifi_mgmt.h>
@@ -26,12 +27,17 @@
 #define BFLB_WIFI_STA_INFO_STRIDE 368U
 #define BFLB_WIFI_VIF_INFO_STRIDE 1512U
 
+/* WiFi block base address (0x44000000 on BL60x, 0x24000000 on BL808).
+ * The NXMAC core and the IPC mailbox sit at the same offsets on both.
+ */
+#define BFLB_WIFI_REG_BASE ((uint32_t)DT_REG_ADDR(DT_NODELABEL(wifi0)))
+
 /* NXMAC HW register addresses. */
-#define NXMAC_MAC_ADDR_LOW_REG      0x44B00044U
-#define NXMAC_MAC_ADDR_HIGH_REG     0x44B00048U
-#define NXMAC_BSS_ADDR_LOW_REG      0x44B00054U
-#define NXMAC_BSS_ADDR_HIGH_REG     0x44B00058U
-#define NXMAC_RX_CNTRL_REG          0x44B00060U
+#define NXMAC_MAC_ADDR_LOW_REG      (BFLB_WIFI_REG_BASE + 0xB00044U)
+#define NXMAC_MAC_ADDR_HIGH_REG     (BFLB_WIFI_REG_BASE + 0xB00048U)
+#define NXMAC_BSS_ADDR_LOW_REG      (BFLB_WIFI_REG_BASE + 0xB00054U)
+#define NXMAC_BSS_ADDR_HIGH_REG     (BFLB_WIFI_REG_BASE + 0xB00058U)
+#define NXMAC_RX_CNTRL_REG          (BFLB_WIFI_REG_BASE + 0xB00060U)
 #define NXMAC_RX_ACCEPT_DECRYPT_ERR BIT(11)
 
 /* Pending command (one at a time). */

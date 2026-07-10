@@ -33,13 +33,10 @@
 
 #include "bflb_wifi.h"
 #include "bflb_wifi_ipc.h"
+#include "bflb_wifi_blob.h"
 #include "bflb_wifi_ccmp.h"
 
 LOG_MODULE_DECLARE(bflb_wifi, CONFIG_WIFI_LOG_LEVEL);
-
-extern void ipc_emb_notify(void);
-extern void txu_cntrl_push(void *pad_txdesc, uint32_t arg1);
-extern struct ipc_shared_env_tag ipc_shared_env;
 
 /* txdesc word offsets indexed directly. */
 #define BFLB_TXDESC_WORD_HOST_ID 1U
@@ -49,46 +46,26 @@ extern struct ipc_shared_env_tag ipc_shared_env;
 #define BFLB_TXDESC_READY_FREE   0U
 #define BFLB_HOSTDESC_OFF_IN_PAD 4U /* txdesc_upper layout: co_list_hdr then hostdesc */
 
+/* Blob-ABI hostdesc offsets, asserted against the SDK header layout. */
+#define BFLB_HOSTDESC_OFF_ETH_DEST_ADDR 16U
+#define BFLB_HOSTDESC_OFF_ETHERTYPE     28U
+#define BFLB_HOSTDESC_OFF_TID           42U
+#define BFLB_HOSTDESC_OFF_VIF_IDX       43U
+#define BFLB_HOSTDESC_OFF_VIF_TYPE      44U
+#define BFLB_HOSTDESC_OFF_STAID         45U
+
 #define BFLB_PRIVATE_SLOT_CNT   2U
 #define BFLB_PRIVATE_FRAME_SZ   1600U
 #define BFLB_PRIVATE_BUFCTRL_SZ 60U
 #define BFLB_SHAREDRAM_ALIGN    8U
 #define BFLB_TXBUF_ALIGN        4U
 
-/* Per-slot contiguous frame buffer for MAC HW DMA: the data descriptor's
- * THD-chain isn't honoured by the dispatcher, so a contiguous frame is
- * built here at TX time.
- */
-static uint8_t bflb_private_frame[BFLB_PRIVATE_SLOT_CNT][BFLB_PRIVATE_FRAME_SZ] __aligned(
-	BFLB_SHAREDRAM_ALIGN) Z_GENERIC_SECTION(SHAREDRAM);
-/* Per-slot buffer_control_desc mirror for hwdesc[+10] -- the FW's embedded
- * copy lives in the IPC shared region the MAC HW DMA can't always reach
- * reliably for control reads.
- */
-static uint8_t bflb_private_bufctrl[BFLB_PRIVATE_SLOT_CNT][BFLB_PRIVATE_BUFCTRL_SZ] __aligned(
-	BFLB_SHAREDRAM_ALIGN) Z_GENERIC_SECTION(SHAREDRAM);
-
-/* Per-frame staging buffer in WIFI_RAM.  The FW leaves a 48-byte headroom
- * before the ethernet header for the 802.11 MAC/QoS/SNAP/IV/MIC
- * encapsulation it prepends.  MAC HW DMA reads pbuf_chained_ptr[0] from
- * this region.
+/* The FW leaves a 48-byte headroom before the ethernet header for the
+ * 802.11 MAC/QoS/SNAP/IV/MIC encapsulation it prepends.
  */
 #define BFLB_TX_HEADROOM   48U
 #define BFLB_TX_PAYLOAD_SZ 1536U /* MTU + slack */
 #define BFLB_TXBUF_SZ      (BFLB_TX_HEADROOM + BFLB_TX_PAYLOAD_SZ)
-
-static uint8_t bflb_txbuf[BFLB_TXBUF_SZ] __aligned(BFLB_TXBUF_ALIGN) Z_GENERIC_SECTION(SHAREDRAM);
-
-/* Host word the FW writes the TX status into via host->status_addr.
- * Bits: 31 DESC_DONE_TX, 30 DESC_DONE_SW_TX, 23 FRAME_SUCCESSFUL_TX.
- */
-/* Status word the FW writes via host->status_addr; uint32_t is naturally
- * word-aligned, which is all the MAC HW DMA requires.
- */
-volatile uint32_t bflb_wifi_tx_status;
-
-/* Serialise TX -- single shared txbuf, multiple callers. */
-static K_MUTEX_DEFINE(bflb_tx_mutex);
 
 #define BFLB_TX_FREE_WAIT_MAX_MS  200U
 #define BFLB_TX_FREE_WAIT_STEP_MS 1U
@@ -113,11 +90,124 @@ static K_MUTEX_DEFINE(bflb_tx_mutex);
 #define BFLB_VIF_TYPE_STA 1U /* MM_STA per vendor bl_output */
 #define BFLB_TID_BE       0U
 
+/* txl_cntrl_push wrap: pad_txdesc field offsets used by the fixup. */
+#define BFLB_TXDESC_OFF_IN_SHARED       516U
+#define BFLB_HOSTDESC_PAD_OFF           12U
+#define BFLB_HOSTDESC_OFF_PAD_MAC_TOTAL 98U
+#define BFLB_HOSTDESC_OFF_PAD_SEC_HDR   100U
+#define BFLB_HOSTDESC_OFF_PAD_ETHERTYPE 32U /* pad+4+hostdesc.ethertype */
+#define BFLB_HOSTDESC_OFF_PAD_PBUF_PTR  52U
+#define BFLB_HOSTDESC_OFF_PAD_PBUF_LEN  68U
+#define BFLB_PAD_HDR_BUF_OFF            556U /* buf_end-mac_total */
+
+#define BFLB_HWDESC_MAGIC             0xCAFEBABEU
+#define BFLB_BUFCTRL_MAGIC            0xBADCAB1EU
+#define BFLB_MACCTRL2_ENCRYPT_BIT     0x00002000U
+#define BFLB_HWDESC_TXBC_RATE_DEFAULT 0xFFFF0704U
+
+#define BFLB_HWDESC_WORD_MAGIC    1U
+#define BFLB_HWDESC_WORD_THD_HEAD 4U
+#define BFLB_HWDESC_WORD_BUFCTRL  10U
+#define BFLB_HWDESC_WORD_MACCTRL2 14U
+
+/* buffer_control_desc word indexes and the "1 transmit attempt" value. */
+#define BFLB_BUFCTRL_WORD_MAGIC   0U
+#define BFLB_BUFCTRL_WORD_CREDITS 2U
+#define BFLB_BUFCTRL_WORD_RATE    4U
+#define BFLB_BUFCTRL_CREDITS_ONE  0x00000001U
+
+#define BFLB_DMA_BD_WORD_MAGIC   0U
+#define BFLB_DMA_BD_WORD_NEXT    1U
+#define BFLB_DMA_BD_WORD_START   2U
+#define BFLB_DMA_BD_WORD_END     3U
+#define BFLB_DMA_BD_WORD_STATUS  4U
+#define BFLB_DMA_BD_MAGIC        0xCAFEFADEU
+#define BFLB_DMA_BD_STATUS_READY 0x80000000U
+
+#define BFLB_MAC_REG_BASE        (BFLB_WIFI_REG_BASE + 0xB08000U)
+#define BFLB_MAC_REG_TRIGGER     (BFLB_MAC_REG_BASE + 0x180U)
+#define BFLB_MAC_REG_AC0_HEAD    (BFLB_MAC_REG_BASE + 0x19CU)
+#define BFLB_MAC_TRIGGER_AC0     0x00000200U
+#define BFLB_HWDESC_THD_BYTE_OFF 4U
+
+#define BFLB_FCS_LEN             4U
+#define BFLB_802_11_QOS_FC_MASK  0xFCU
+#define BFLB_802_11_QOS_FC_VALUE 0x88U
+#define BFLB_802_11_QOS_TID_OFF  24U
+#define BFLB_802_11_QOS_TID_MASK 0x0FU
+#define BFLB_CCMP_IV_LEN         8U
+#define BFLB_LLC_LEN             8U
+#define BFLB_LLC_DSAP_SNAP       0xAAU
+#define BFLB_LLC_SSAP_SNAP       0xAAU
+#define BFLB_LLC_CTRL_UNNUMBERED 0x03U
+/* Smallest QoS-data MAC header (26) + CCMP IV (8) + LLC SNAP (8). */
+#define BFLB_MIN_ENCRYPTED_FRAME 34U
+#define BFLB_PLAIN_BUF_SZ        1518U
+
+#define BFLB_802_11_HDR_A3_OFF      16U /* A3 = DA in ToDS=1 frame */
+#define BFLB_FC_BYTE1_PROTECTED_BIT 0x40U
+#define BFLB_FC1_POWER_MGMT         0x10U
+#define BFLB_ETH_GROUP_ADDR_BIT     0x01U
+
 struct bflb_eth_frame_hdr {
 	uint8_t dst[BFLB_ETH_MAC_LEN];
 	uint8_t src[BFLB_ETH_MAC_LEN];
 	uint16_t etype_be;
 } __packed;
+
+extern void ipc_emb_notify(void);
+extern void txu_cntrl_push(void *pad_txdesc, uint32_t arg1);
+extern void __real_txl_cntrl_push(void *pad_txdesc, uint32_t arg1);
+extern struct ipc_shared_env_tag ipc_shared_env;
+
+/* Per-slot contiguous frame buffer for MAC HW DMA: the data descriptor's
+ * THD-chain isn't honoured by the dispatcher, so a contiguous frame is
+ * built here at TX time.
+ */
+static uint8_t bflb_private_frame[BFLB_PRIVATE_SLOT_CNT][BFLB_PRIVATE_FRAME_SZ] __aligned(
+	BFLB_SHAREDRAM_ALIGN) Z_GENERIC_SECTION(SHAREDRAM);
+/* Per-slot buffer_control_desc mirror for hwdesc[+10] -- the FW's embedded
+ * copy lives in the IPC shared region the MAC HW DMA can't always reach
+ * reliably for control reads.
+ */
+static uint8_t bflb_private_bufctrl[BFLB_PRIVATE_SLOT_CNT][BFLB_PRIVATE_BUFCTRL_SZ] __aligned(
+	BFLB_SHAREDRAM_ALIGN) Z_GENERIC_SECTION(SHAREDRAM);
+
+/* Per-frame staging buffer in WIFI_RAM.  MAC HW DMA reads
+ * pbuf_chained_ptr[0] from this region.
+ */
+static uint8_t bflb_txbuf[BFLB_TXBUF_SZ] __aligned(BFLB_TXBUF_ALIGN) Z_GENERIC_SECTION(SHAREDRAM);
+
+/* Plaintext staging off-stack: TX runs in arbitrary caller context (net
+ * TX, net_mgmt, supplicant) where 1.5 KB of stack is not guaranteed.
+ * Serialized by the tx mutex held across txu_cntrl_push.
+ */
+static uint8_t ccmp_plain[BFLB_PLAIN_BUF_SZ];
+
+/* Serialise TX -- single shared txbuf, multiple callers. */
+static K_MUTEX_DEFINE(bflb_tx_mutex);
+
+/* Status word the FW writes via host->status_addr; uint32_t is naturally
+ * word-aligned, which is all the MAC HW DMA requires.
+ * Bits: 31 DESC_DONE_TX, 30 DESC_DONE_SW_TX, 23 FRAME_SUCCESSFUL_TX.
+ */
+volatile uint32_t bflb_wifi_tx_status;
+
+static volatile uint8_t *bflb_tx_alloc_slot(void);
+static void bflb_tx_fill_hostdesc(volatile uint8_t *td_raw, const struct bflb_eth_frame_hdr *eth,
+				  const uint8_t *frame, uint16_t len, uint8_t vif_idx,
+				  uint8_t sta_idx);
+static int bflb_pad_to_idx(const void *pad_txdesc);
+static void bflb_tx_setup_bufctrl(int idx, volatile uint32_t *hw);
+static void bflb_make_llc_snap(uint8_t llc[BFLB_LLC_LEN], uint16_t eth_type);
+static int bflb_tx_ccmp_encrypt(void *pad_txdesc, const uint8_t *hdr_src, uint8_t mac_total,
+				uint16_t eth_type, uint32_t payload_addr, uint16_t payload_len,
+				uint8_t *frame);
+static uint16_t bflb_hostdesc_eth_type(const uint8_t *pad_txdesc);
+static void bflb_tx_fixup_bd_chain(volatile uint32_t *hw, const uint8_t *frame,
+				   uint32_t frame_total, uint8_t orig_mac_total);
+static void bflb_tx_fixup(void *pad_txdesc, volatile uint32_t *hw);
+static void bflb_tx_arm_ac0(volatile uint32_t *hw);
 
 /* Find a free txdesc slot (ready==0).  Both descriptors can be in flight;
  * wait briefly for the FW to clear `ready` rather than dropping the frame
@@ -178,131 +268,6 @@ static void bflb_tx_fill_hostdesc(volatile uint8_t *td_raw, const struct bflb_et
 	td_words[BFLB_TXDESC_WORD_READY] = BFLB_TXDESC_READY_FILLED;
 }
 
-int bflb_wifi_tx_eth(const uint8_t *frame, uint16_t len, uint8_t vif_idx, uint8_t sta_idx)
-{
-	const struct bflb_eth_frame_hdr *eth = (const struct bflb_eth_frame_hdr *)frame;
-	volatile uint8_t *td_raw;
-	volatile uint32_t *td_words;
-	uint8_t *pad;
-	bool done = false;
-
-	BUILD_ASSERT(offsetof(struct hostdesc, eth_dest_addr) == 16,
-		     "hostdesc.eth_dest_addr offset");
-	BUILD_ASSERT(offsetof(struct hostdesc, ethertype) == 28, "hostdesc.ethertype offset");
-	BUILD_ASSERT(offsetof(struct hostdesc, tid) == 42, "hostdesc.tid offset");
-	BUILD_ASSERT(offsetof(struct hostdesc, vif_idx) == 43, "hostdesc.vif_idx offset");
-	BUILD_ASSERT(offsetof(struct hostdesc, vif_type) == 44, "hostdesc.vif_type offset");
-	BUILD_ASSERT(offsetof(struct hostdesc, staid) == 45, "hostdesc.staid offset");
-
-	if ((frame == NULL) || (len < BFLB_WIFI_ETH_HDR_LEN) ||
-	    (((uint32_t)len + BFLB_TX_HEADROOM) > BFLB_TXBUF_SZ)) {
-		return -EINVAL;
-	}
-
-	k_mutex_lock(&bflb_tx_mutex, K_FOREVER);
-
-	td_raw = bflb_tx_alloc_slot();
-	if (td_raw == NULL) {
-		LOG_WRN("tx: no free txdesc after %ums", BFLB_TX_FREE_WAIT_MAX_MS);
-		k_mutex_unlock(&bflb_tx_mutex);
-		return -ENOMEM;
-	}
-
-	bflb_tx_fill_hostdesc(td_raw, eth, frame, len, vif_idx, sta_idx);
-
-	/* Replicate ipc_emb_tx_evt's inline hwdesc/cfm chain setup. */
-	pad = (uint8_t *)(uintptr_t)td_raw + BFLB_TXDESC_HOSTDESC_OFF;
-	*(uint32_t *)(pad + BFLB_PAD_OFF_INLINE_HWDESC) =
-		(uint32_t)(uintptr_t)(pad + BFLB_PAD_OFF_INLINE_CFM);
-	*(uint32_t *)(pad + BFLB_PAD_OFF_HWDESC_PTR) =
-		(uint32_t)(uintptr_t)(pad + BFLB_PAD_OFF_INLINE_HWDESC);
-
-	sys_cache_data_flush_all();
-
-	/* Run the FW's TX chain synchronously in this thread:
-	 * txu_cntrl_push -> __wrap_txl_cntrl_push -> fixup -> arm AC0.
-	 */
-	txu_cntrl_push(pad, 0U);
-
-	for (uint32_t poll = 0; poll < BFLB_TX_CFM_POLL_MAX_MS; poll += BFLB_TX_CFM_POLL_STEP_MS) {
-		if ((bflb_wifi_tx_status & BFLB_TX_STATINFO_DONE) != 0U) {
-			done = true;
-			break;
-		}
-		k_msleep(BFLB_TX_CFM_POLL_STEP_MS);
-	}
-
-	td_words = (volatile uint32_t *)td_raw;
-	if (!done) {
-		LOG_DBG("tx: cfm timeout %ums tx_status=0x%08x", BFLB_TX_CFM_POLL_MAX_MS,
-			bflb_wifi_tx_status);
-	}
-
-	td_words[BFLB_TXDESC_WORD_READY] = BFLB_TXDESC_READY_FREE;
-
-	/* Wake the FW thread so it can recycle hwdesc/BD entries. */
-	ipc_emb_notify();
-
-	k_mutex_unlock(&bflb_tx_mutex);
-	return 0;
-}
-
-/* txl_cntrl_push wrap: descriptor fixup + MAC HW arming. */
-
-#define BFLB_TXDESC_OFF_IN_SHARED       516U
-#define BFLB_HOSTDESC_PAD_OFF           12U
-#define BFLB_HOSTDESC_OFF_PAD_MAC_TOTAL 98U
-#define BFLB_HOSTDESC_OFF_PAD_SEC_HDR   100U
-#define BFLB_HOSTDESC_OFF_PAD_ETHERTYPE 32U /* pad+4+hostdesc.ethertype */
-#define BFLB_HOSTDESC_OFF_PAD_PBUF_PTR  52U
-#define BFLB_HOSTDESC_OFF_PAD_PBUF_LEN  68U
-#define BFLB_PAD_HDR_BUF_OFF            556U /* buf_end-mac_total */
-
-#define BFLB_HWDESC_MAGIC             0xCAFEBABEU
-#define BFLB_BUFCTRL_MAGIC            0xBADCAB1EU
-#define BFLB_MACCTRL2_ENCRYPT_BIT     0x00002000U
-#define BFLB_HWDESC_TXBC_RATE_DEFAULT 0xFFFF0704U
-
-#define BFLB_HWDESC_WORD_MAGIC    1U
-#define BFLB_HWDESC_WORD_THD_HEAD 4U
-#define BFLB_HWDESC_WORD_BUFCTRL  10U
-#define BFLB_HWDESC_WORD_MACCTRL2 14U
-
-#define BFLB_DMA_BD_WORD_MAGIC   0U
-#define BFLB_DMA_BD_WORD_NEXT    1U
-#define BFLB_DMA_BD_WORD_START   2U
-#define BFLB_DMA_BD_WORD_END     3U
-#define BFLB_DMA_BD_WORD_STATUS  4U
-#define BFLB_DMA_BD_MAGIC        0xCAFEFADEU
-#define BFLB_DMA_BD_STATUS_READY 0x80000000U
-
-#define BFLB_MAC_REG_BASE        0x44B08000U
-#define BFLB_MAC_REG_TRIGGER     (BFLB_MAC_REG_BASE + 0x180U)
-#define BFLB_MAC_REG_AC0_HEAD    (BFLB_MAC_REG_BASE + 0x19CU)
-#define BFLB_MAC_TRIGGER_AC0     0x00000200U
-#define BFLB_HWDESC_THD_BYTE_OFF 4U
-
-#define BFLB_FCS_LEN             4U
-#define BFLB_802_11_QOS_FC_MASK  0xFCU
-#define BFLB_802_11_QOS_FC_VALUE 0x88U
-#define BFLB_802_11_QOS_TID_OFF  24U
-#define BFLB_802_11_QOS_TID_MASK 0x0FU
-#define BFLB_CCMP_IV_LEN         8U
-#define BFLB_LLC_LEN             8U
-#define BFLB_LLC_DSAP_SNAP       0xAAU
-#define BFLB_LLC_SSAP_SNAP       0xAAU
-#define BFLB_LLC_CTRL_UNNUMBERED 0x03U
-/* Smallest QoS-data MAC header (26) + CCMP IV (8) + LLC SNAP (8). */
-#define BFLB_MIN_ENCRYPTED_FRAME 34U
-#define BFLB_PLAIN_BUF_SZ        1518U
-
-#define BFLB_802_11_HDR_A3_OFF      16U /* A3 = DA in ToDS=1 frame */
-#define BFLB_FC_BYTE1_PROTECTED_BIT 0x40U
-#define BFLB_FC1_POWER_MGMT         0x10U
-#define BFLB_ETH_GROUP_ADDR_BIT     0x01U
-
-extern void __real_txl_cntrl_push(void *pad_txdesc, uint32_t arg1);
-
 /* The blob TX pipeline uses two slots whose pad_txdesc start addresses are
  * one stride apart; pick the matching private hwdesc.
  */
@@ -323,9 +288,9 @@ static void bflb_tx_setup_bufctrl(int idx, volatile uint32_t *hw)
 	volatile uint32_t *bc = (volatile uint32_t *)bflb_private_bufctrl[idx];
 
 	memset((void *)(uintptr_t)bc, 0, BFLB_PRIVATE_BUFCTRL_SZ);
-	bc[0] = BFLB_BUFCTRL_MAGIC;
-	bc[2] = 0x00000001U;
-	bc[4] = BFLB_HWDESC_TXBC_RATE_DEFAULT;
+	bc[BFLB_BUFCTRL_WORD_MAGIC] = BFLB_BUFCTRL_MAGIC;
+	bc[BFLB_BUFCTRL_WORD_CREDITS] = BFLB_BUFCTRL_CREDITS_ONE;
+	bc[BFLB_BUFCTRL_WORD_RATE] = BFLB_HWDESC_TXBC_RATE_DEFAULT;
 
 	hw[BFLB_HWDESC_WORD_BUFCTRL] = (uint32_t)bc;
 }
@@ -348,12 +313,6 @@ static void bflb_make_llc_snap(uint8_t llc[BFLB_LLC_LEN], uint16_t eth_type)
  *   [+34..+41]  LLC SNAP (not reliable in all FW paths; rebuilt here)
  * Payload comes via pbuf_chained_ptr[0].
  */
-/* Plaintext staging off-stack: TX runs in arbitrary caller context (net
- * TX, net_mgmt, supplicant) where 1.5 KB of stack is not guaranteed.
- * Serialized by the tx mutex held across txu_cntrl_push.
- */
-static uint8_t ccmp_plain[BFLB_PLAIN_BUF_SZ];
-
 static int bflb_tx_ccmp_encrypt(void *pad_txdesc, const uint8_t *hdr_src, uint8_t mac_total,
 				uint16_t eth_type, uint32_t payload_addr, uint16_t payload_len,
 				uint8_t *frame)
@@ -508,6 +467,81 @@ static void bflb_tx_arm_ac0(volatile uint32_t *hw)
 	*trigger = BFLB_MAC_TRIGGER_AC0;
 }
 
+int bflb_wifi_tx_eth(const uint8_t *frame, uint16_t len, uint8_t vif_idx, uint8_t sta_idx)
+{
+	const struct bflb_eth_frame_hdr *eth = (const struct bflb_eth_frame_hdr *)frame;
+	volatile uint8_t *td_raw;
+	volatile uint32_t *td_words;
+	uint8_t *pad;
+	bool done = false;
+
+	BUILD_ASSERT(offsetof(struct hostdesc, eth_dest_addr) == BFLB_HOSTDESC_OFF_ETH_DEST_ADDR,
+		     "hostdesc.eth_dest_addr offset");
+	BUILD_ASSERT(offsetof(struct hostdesc, ethertype) == BFLB_HOSTDESC_OFF_ETHERTYPE,
+		     "hostdesc.ethertype offset");
+	BUILD_ASSERT(offsetof(struct hostdesc, tid) == BFLB_HOSTDESC_OFF_TID,
+		     "hostdesc.tid offset");
+	BUILD_ASSERT(offsetof(struct hostdesc, vif_idx) == BFLB_HOSTDESC_OFF_VIF_IDX,
+		     "hostdesc.vif_idx offset");
+	BUILD_ASSERT(offsetof(struct hostdesc, vif_type) == BFLB_HOSTDESC_OFF_VIF_TYPE,
+		     "hostdesc.vif_type offset");
+	BUILD_ASSERT(offsetof(struct hostdesc, staid) == BFLB_HOSTDESC_OFF_STAID,
+		     "hostdesc.staid offset");
+
+	if ((frame == NULL) || (len < BFLB_WIFI_ETH_HDR_LEN) ||
+	    (((uint32_t)len + BFLB_TX_HEADROOM) > BFLB_TXBUF_SZ)) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&bflb_tx_mutex, K_FOREVER);
+
+	td_raw = bflb_tx_alloc_slot();
+	if (td_raw == NULL) {
+		LOG_WRN("tx: no free txdesc after %ums", BFLB_TX_FREE_WAIT_MAX_MS);
+		k_mutex_unlock(&bflb_tx_mutex);
+		return -ENOMEM;
+	}
+
+	bflb_tx_fill_hostdesc(td_raw, eth, frame, len, vif_idx, sta_idx);
+
+	/* Replicate ipc_emb_tx_evt's inline hwdesc/cfm chain setup. */
+	pad = (uint8_t *)(uintptr_t)td_raw + BFLB_TXDESC_HOSTDESC_OFF;
+	*(uint32_t *)(pad + BFLB_PAD_OFF_INLINE_HWDESC) =
+		(uint32_t)(uintptr_t)(pad + BFLB_PAD_OFF_INLINE_CFM);
+	*(uint32_t *)(pad + BFLB_PAD_OFF_HWDESC_PTR) =
+		(uint32_t)(uintptr_t)(pad + BFLB_PAD_OFF_INLINE_HWDESC);
+
+	sys_cache_data_flush_all();
+
+	/* Run the FW's TX chain synchronously in this thread:
+	 * txu_cntrl_push -> __wrap_txl_cntrl_push -> fixup -> arm AC0.
+	 */
+	txu_cntrl_push(pad, 0U);
+
+	for (uint32_t poll = 0; poll < BFLB_TX_CFM_POLL_MAX_MS; poll += BFLB_TX_CFM_POLL_STEP_MS) {
+		if ((bflb_wifi_tx_status & BFLB_TX_STATINFO_DONE) != 0U) {
+			done = true;
+			break;
+		}
+		k_msleep(BFLB_TX_CFM_POLL_STEP_MS);
+	}
+
+	td_words = (volatile uint32_t *)td_raw;
+	if (!done) {
+		LOG_DBG("tx: cfm timeout %ums tx_status=0x%08x", BFLB_TX_CFM_POLL_MAX_MS,
+			bflb_wifi_tx_status);
+	}
+
+	td_words[BFLB_TXDESC_WORD_READY] = BFLB_TXDESC_READY_FREE;
+
+	/* Wake the FW thread so it can recycle hwdesc/BD entries. */
+	ipc_emb_notify();
+
+	k_mutex_unlock(&bflb_tx_mutex);
+	return 0;
+}
+
+/* txl_cntrl_push wrap: descriptor fixup + MAC HW arming. */
 void __wrap_txl_cntrl_push(void *pad_txdesc, uint32_t arg1)
 {
 	volatile uint32_t *hw;

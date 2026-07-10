@@ -18,6 +18,7 @@ tests:
       - arduino_portenta_h7@4.10.0/stm32h747xx/m7 # Requires binary blobs to build
       - ai_wb2_12f_kit # Requires binary blobs to build
       - bl604e_iot_dvk # Requires binary blobs to build
+      - m1s_dock # Requires binary blobs to build
       - bl618g0 # Requires binary blobs to build
       - ai_m61_32s_kit # Requires binary blobs to build
       - ai_m62_12f_kit # Requires binary blobs to build

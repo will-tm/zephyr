@@ -19,6 +19,7 @@ tests:
       - maix_m0s_dock
       - ai_wb2_12f_kit
       - bl604e_iot_dvk
+      - m1s_dock
   drivers.wifi.bflb.macsw_bridge:
     platform_allow:
       - bl618g0

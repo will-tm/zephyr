@@ -73,6 +73,15 @@ LOG_MODULE_REGISTER(bflb_wifi_plat, CONFIG_WIFI_LOG_LEVEL);
 #define BFLB_RF_PWR_AVG_REAL_CALL_LIMIT 50
 #define BFLB_RF_PWR_AVG_STUB_VALUE      1000
 
+#define BFLB_CRC32_STATE_INIT 0xFFFFFFFFU
+
+#define PWR_TABLE_INIT(prop) {DT_FOREACH_PROP_ELEM_SEP(WIFI_DT_NODE, prop, DT_PROP_BY_IDX, (,))}
+
+/* CRC32 stream (used by the blob for beacon integrity checks). */
+struct utils_crc32_stream {
+	uint32_t state;
+};
+
 /* Entry points into the firmware/PHY blobs. */
 extern void wifi_main(void *arg);
 extern int wifi_hosal_rf_turn_on(void *arg);
@@ -87,9 +96,43 @@ extern void bl_sleep_schedule(void);
 extern void ke_evt_schedule(void);
 extern uint32_t ke_env;
 
+/* PHY power tables and channel config. */
+extern void trpc_update_power_11b(int8_t *pwr);
+extern void trpc_update_power_11g(int8_t *pwr);
+extern void trpc_update_power_11n(int8_t *pwr);
+extern void rfc_config_channel(uint32_t channel_freq);
+
+/* Wrapped blob entry points. */
+extern void __real_hal_machw_gen_handler(void);
+extern int __real_rfc_init(uint32_t xtal);
+extern void rf_pri_init_calib_mem(void);
+extern int __real_rf_pri_pm_pwr_avg(int arg);
+
+void ipc_emb_wait(void);
+void ipc_emb_notify(void);
+
 /* Linker anchors the blob walks for its static configuration entries. */
 uint8_t _ld_bl_static_cfg_entry_start[0] Z_GENERIC_SECTION(.bl_static_cfg_entry);
 uint8_t _ld_bl_static_cfg_entry_end[0] Z_GENERIC_SECTION(.bl_static_cfg_entry);
+
+/* WiFi firmware thread: the wrapped wifi_main() below is a cooperative
+ * scheduler that never returns.
+ */
+static K_KERNEL_STACK_DEFINE(wifi_task_stack, CONFIG_BFLB_WIFI_FW_TASK_STACK_SIZE);
+static struct k_thread wifi_task_thread;
+static K_SEM_DEFINE(wifi_task_ready_sem, 0, 1);
+
+/* Firmware scheduler sleep/wake on a Zephyr semaphore. */
+static K_SEM_DEFINE(ipc_emb_sem, 0, 1);
+
+static volatile bool rf_cal_active;
+
+static void bflb_wifi_rf_power_on(void);
+static void rf_top_isr(const void *arg);
+static void wifi_task_entry(void *p1, void *p2, void *p3);
+static void wifi_mac_reset_pulse(void);
+static void wifi_mac_ctrl_init_cycle(void);
+static void wifi_mac_sleep_gate_update(void);
 
 /* RF power-on: WB, MBG, LDO15RF, SFREG rails plus WiFi AHB clock ungate
  * and a default XTAL capcode (without it the crystal can be off enough
@@ -138,65 +181,6 @@ static void rf_top_isr(const void *arg)
 	ARG_UNUSED(arg);
 }
 
-/* RF parameter init: no RFTLV blob in flash, feed the PHY the power
- * tables from devicetree (quarter-dBm).
- */
-extern void trpc_update_power_11b(int8_t *pwr);
-extern void trpc_update_power_11g(int8_t *pwr);
-extern void trpc_update_power_11n(int8_t *pwr);
-
-#define PWR_TABLE_INIT(prop) {DT_FOREACH_PROP_ELEM_SEP(WIFI_DT_NODE, prop, DT_PROP_BY_IDX, (,))}
-
-int32_t rfparam_init(uint32_t base_addr, void *rf_para, uint32_t apply_flag)
-{
-	static int8_t pwr_11b[4] = PWR_TABLE_INIT(pwr_table_11b);
-	static int8_t pwr_11g[8] = PWR_TABLE_INIT(pwr_table_11g);
-	static int8_t pwr_11n[8] = PWR_TABLE_INIT(pwr_table_11n);
-
-	ARG_UNUSED(base_addr);
-	ARG_UNUSED(rf_para);
-	ARG_UNUSED(apply_flag);
-
-	trpc_update_power_11b(pwr_11b);
-	trpc_update_power_11g(pwr_11g);
-	trpc_update_power_11n(pwr_11n);
-
-	return 0;
-}
-
-extern void rfc_config_channel(uint32_t channel_freq);
-
-/* Weak: newer phyrf library revisions export rf_set_channel themselves. */
-__weak void rf_set_channel(uint8_t bandwidth, uint16_t channel_freq)
-{
-	ARG_UNUSED(bandwidth);
-	rfc_config_channel(channel_freq);
-}
-
-int bflb_wifi_hw_init(void)
-{
-	bflb_wifi_rf_power_on();
-
-	if (rfparam_init(0, NULL, 0) != 0) {
-		LOG_ERR("rfparam_init failed");
-		return -EIO;
-	}
-
-	IRQ_CONNECT(RF_TOP0_IRQ_NUM, RF_TOP0_IRQ_PRI, rf_top_isr, NULL, 0);
-	IRQ_CONNECT(RF_TOP1_IRQ_NUM, RF_TOP1_IRQ_PRI, rf_top_isr, NULL, 0);
-	irq_enable(RF_TOP0_IRQ_NUM);
-	irq_enable(RF_TOP1_IRQ_NUM);
-
-	return 0;
-}
-
-/* WiFi firmware thread: the wrapped wifi_main() below is a cooperative
- * scheduler that never returns.
- */
-static K_KERNEL_STACK_DEFINE(wifi_task_stack, CONFIG_BFLB_WIFI_BL60X_TASK_STACK_SIZE);
-static struct k_thread wifi_task_thread;
-static K_SEM_DEFINE(wifi_task_ready_sem, 0, 1);
-
 static void wifi_task_entry(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
@@ -204,35 +188,6 @@ static void wifi_task_entry(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p3);
 	wifi_main(NULL);
 }
-
-void wifi_task_create(void)
-{
-	k_thread_create(&wifi_task_thread, wifi_task_stack, K_THREAD_STACK_SIZEOF(wifi_task_stack),
-			wifi_task_entry, NULL, NULL, NULL,
-			K_PRIO_PREEMPT(CONFIG_BFLB_WIFI_BL60X_TASK_PRIORITY), 0, K_NO_WAIT);
-	k_thread_name_set(&wifi_task_thread, "bl60x_wifi_fw");
-}
-
-int wifi_task_wait_ready(k_timeout_t timeout)
-{
-	return k_sem_take(&wifi_task_ready_sem, timeout);
-}
-
-/* Firmware scheduler sleep/wake on a Zephyr semaphore. */
-static K_SEM_DEFINE(ipc_emb_sem, 0, 1);
-
-void __wrap_ipc_emb_wait(void)
-{
-	k_sem_take(&ipc_emb_sem, K_MSEC(1));
-}
-
-void __wrap_ipc_emb_notify(void)
-{
-	k_sem_give(&ipc_emb_sem);
-}
-
-void ipc_emb_wait(void);
-void ipc_emb_notify(void);
 
 static void wifi_mac_reset_pulse(void)
 {
@@ -279,6 +234,73 @@ static void wifi_mac_sleep_gate_update(void)
 	}
 }
 
+/* RF parameter init: no RFTLV blob in flash, feed the PHY the power
+ * tables from devicetree (quarter-dBm).
+ */
+int32_t rfparam_init(uint32_t base_addr, void *rf_para, uint32_t apply_flag)
+{
+	static int8_t pwr_11b[4] = PWR_TABLE_INIT(pwr_table_11b);
+	static int8_t pwr_11g[8] = PWR_TABLE_INIT(pwr_table_11g);
+	static int8_t pwr_11n[8] = PWR_TABLE_INIT(pwr_table_11n);
+
+	ARG_UNUSED(base_addr);
+	ARG_UNUSED(rf_para);
+	ARG_UNUSED(apply_flag);
+
+	trpc_update_power_11b(pwr_11b);
+	trpc_update_power_11g(pwr_11g);
+	trpc_update_power_11n(pwr_11n);
+
+	return 0;
+}
+
+/* Weak: newer phyrf library revisions export rf_set_channel themselves. */
+__weak void rf_set_channel(uint8_t bandwidth, uint16_t channel_freq)
+{
+	ARG_UNUSED(bandwidth);
+	rfc_config_channel(channel_freq);
+}
+
+int bflb_wifi_hw_init(void)
+{
+	bflb_wifi_rf_power_on();
+
+	if (rfparam_init(0, NULL, 0) != 0) {
+		LOG_ERR("rfparam_init failed");
+		return -EIO;
+	}
+
+	IRQ_CONNECT(RF_TOP0_IRQ_NUM, RF_TOP0_IRQ_PRI, rf_top_isr, NULL, 0);
+	IRQ_CONNECT(RF_TOP1_IRQ_NUM, RF_TOP1_IRQ_PRI, rf_top_isr, NULL, 0);
+	irq_enable(RF_TOP0_IRQ_NUM);
+	irq_enable(RF_TOP1_IRQ_NUM);
+
+	return 0;
+}
+
+void wifi_task_create(void)
+{
+	k_thread_create(&wifi_task_thread, wifi_task_stack, K_THREAD_STACK_SIZEOF(wifi_task_stack),
+			wifi_task_entry, NULL, NULL, NULL,
+			K_PRIO_PREEMPT(CONFIG_BFLB_WIFI_FW_TASK_PRIORITY), 0, K_NO_WAIT);
+	k_thread_name_set(&wifi_task_thread, "bl60x_wifi_fw");
+}
+
+int wifi_task_wait_ready(k_timeout_t timeout)
+{
+	return k_sem_take(&wifi_task_ready_sem, timeout);
+}
+
+void __wrap_ipc_emb_wait(void)
+{
+	k_sem_take(&ipc_emb_sem, K_MSEC(1));
+}
+
+void __wrap_ipc_emb_notify(void)
+{
+	k_sem_give(&ipc_emb_sem);
+}
+
 /* Replacement for the blob's wifi_main(): bring the MAC out of reset, run
  * the same sysctrl / clk / IPC init the blob does, then enter the
  * cooperative scheduler.  The MAC HW reset pulse on SWRST_S20 and the MAC
@@ -322,8 +344,6 @@ void __wrap_wifi_main(void *arg)
 /* MAC HW GEN-status DMA-dead recovery: pulse the LOAD bits so MAC HW
  * re-reads its DMA pointer registers and resumes.
  */
-extern void __real_hal_machw_gen_handler(void);
-
 void __wrap_hal_machw_gen_handler(void)
 {
 	uint32_t pending = sys_read32(MAC_HW_GEN_RAW_REG) & sys_read32(MAC_HW_GEN_MASK_REG);
@@ -345,11 +365,6 @@ void __wrap_hal_machw_gen_handler(void)
  * preempting between register accesses leaves the MAC/PHY bus wedged.
  * Run the real calibration with IRQs locked and pre-init the cal memory.
  */
-extern int __real_rfc_init(uint32_t xtal);
-extern void rf_pri_init_calib_mem(void);
-
-static volatile bool rf_cal_active;
-
 int __wrap_rfc_init(uint32_t xtal)
 {
 	unsigned int key;
@@ -369,8 +384,6 @@ int __wrap_rfc_init(uint32_t xtal)
 /* The PHY's pm_pwr_avg spins on a power-meter read.  After the tmx_cs
  * sweep the result no longer matters; short-circuit with a stub value.
  */
-extern int __real_rf_pri_pm_pwr_avg(int arg);
-
 int __wrap_rf_pri_pm_pwr_avg(int arg)
 {
 	static int count;
@@ -466,13 +479,6 @@ void utils_list_init(struct utils_list *l)
 	l->first = NULL;
 	l->last = NULL;
 }
-
-/* CRC32 stream (used by the blob for beacon integrity checks). */
-struct utils_crc32_stream {
-	uint32_t state;
-};
-
-#define BFLB_CRC32_STATE_INIT 0xFFFFFFFFU
 
 int utils_crc32_stream_init(struct utils_crc32_stream *s)
 {

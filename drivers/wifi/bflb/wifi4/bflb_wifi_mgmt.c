@@ -17,6 +17,9 @@
 LOG_MODULE_DECLARE(bflb_wifi, CONFIG_WIFI_LOG_LEVEL);
 
 static int bflb_wifi_status(const struct device *dev, struct net_if *iface,
+			    struct wifi_iface_status *status);
+
+static int bflb_wifi_status(const struct device *dev, struct net_if *iface,
 			    struct wifi_iface_status *status)
 {
 	struct bflb_wifi_dev *d = dev->data;

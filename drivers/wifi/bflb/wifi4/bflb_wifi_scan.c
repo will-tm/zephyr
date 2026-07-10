@@ -42,6 +42,13 @@ LOG_MODULE_DECLARE(bflb_wifi, CONFIG_WIFI_LOG_LEVEL);
 
 #define BFLB_SCAN_CHAN_MAX 14 /* 2G4 only */
 
+#define BFLB_2G4_FREQ_BASE  2407U
+#define BFLB_2G4_FREQ_FIRST 2412U
+#define BFLB_2G4_FREQ_LAST  2472U
+#define BFLB_2G4_FREQ_CH14  2484U
+#define BFLB_2G4_FREQ_STEP  5U
+#define BFLB_2G4_CH14       14U
+
 /* SCANU_RESULT_IND payload as the FW emits it -- blob ABI layout. */
 struct bflb_scanu_result_ind {
 	uint16_t length;      /* offset 0 */
@@ -71,12 +78,11 @@ static const uint16_t bflb_ch_freq[BFLB_SCAN_CHAN_MAX] = {
 static struct bflb_scan_ap scan_ap[BFLB_SCAN_AP_MAX];
 static uint8_t scan_ap_cnt;
 
-#define BFLB_2G4_FREQ_BASE  2407U
-#define BFLB_2G4_FREQ_FIRST 2412U
-#define BFLB_2G4_FREQ_LAST  2472U
-#define BFLB_2G4_FREQ_CH14  2484U
-#define BFLB_2G4_FREQ_STEP  5U
-#define BFLB_2G4_CH14       14U
+static uint8_t freq_to_ch(uint16_t f);
+static const uint8_t *find_ie(const uint8_t *pos, size_t len, uint8_t id);
+static const uint8_t *find_wpa_ie(const uint8_t *pos, size_t len);
+static struct bflb_scan_ap *scan_find_bssid(const uint8_t *bssid);
+static void bflb_init_scan_req(const struct bflb_wifi_dev *d, struct scanu_start_req *req);
 
 static uint8_t freq_to_ch(uint16_t f)
 {
@@ -125,6 +131,25 @@ static struct bflb_scan_ap *scan_find_bssid(const uint8_t *bssid)
 		}
 	}
 	return NULL;
+}
+
+static void bflb_init_scan_req(const struct bflb_wifi_dev *d, struct scanu_start_req *req)
+{
+	memset(req, 0, sizeof(*req));
+	for (size_t i = 0; i < ARRAY_SIZE(bflb_ch_freq) - 1U; i++) {
+		req->chan[i].band = 0;
+		req->chan[i].freq = bflb_ch_freq[i];
+		req->chan[i].flags = 0;
+		req->chan[i].tx_power = BFLB_TX_POWER_DBM;
+	}
+	req->chan_cnt = ARRAY_SIZE(bflb_ch_freq) - 1U;
+	req->ssid_cnt = 1;
+	req->ssid[0].length = 0;
+	memset(req->bssid.array, 0xFF, BFLB_WIFI_MAC_ADDR_LEN);
+	memcpy(req->mac.array, d->mac_addr, BFLB_WIFI_MAC_ADDR_LEN);
+	req->vif_idx = d->vif_idx;
+	req->no_cck = 1;
+	req->duration_scan = BFLB_SCAN_DWELL_US;
 }
 
 /* Called from the IPC E2A path for every received probe-resp/beacon. */
@@ -235,25 +260,6 @@ const struct bflb_scan_ap *bflb_wifi_scan_find_ssid(const uint8_t *ssid, uint8_t
 		}
 	}
 	return NULL;
-}
-
-static void bflb_init_scan_req(const struct bflb_wifi_dev *d, struct scanu_start_req *req)
-{
-	memset(req, 0, sizeof(*req));
-	for (size_t i = 0; i < ARRAY_SIZE(bflb_ch_freq) - 1U; i++) {
-		req->chan[i].band = 0;
-		req->chan[i].freq = bflb_ch_freq[i];
-		req->chan[i].flags = 0;
-		req->chan[i].tx_power = BFLB_TX_POWER_DBM;
-	}
-	req->chan_cnt = ARRAY_SIZE(bflb_ch_freq) - 1U;
-	req->ssid_cnt = 1;
-	req->ssid[0].length = 0;
-	memset(req->bssid.array, 0xFF, BFLB_WIFI_MAC_ADDR_LEN);
-	memcpy(req->mac.array, d->mac_addr, BFLB_WIFI_MAC_ADDR_LEN);
-	req->vif_idx = d->vif_idx;
-	req->no_cck = 1;
-	req->duration_scan = BFLB_SCAN_DWELL_US;
 }
 
 /* Active wildcard scan across channels 1-13.  Returns immediately;

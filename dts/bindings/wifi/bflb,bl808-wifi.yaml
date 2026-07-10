@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+description: Bouffalo Lab BL808 WiFi MAC
+
+compatible: "bflb,bl808-wifi"
+
+include: base.yaml
+
+properties:
+  interrupts:
+    required: true
+    description: |
+      WiFi MAC and IPC interrupts.
+      Two entries required: "wifi" (MAC) and "wifi-ipc" (IPC mailbox).
+
+  interrupt-names:
+    required: true
+
+  pwr-table-11b:
+    type: array
+    description: |
+      TX power targets for 802.11b rates (1, 2, 5.5, 11 Mbps).
+      4 entries, units are dBm.
+
+  pwr-table-11g:
+    type: array
+    description: |
+      TX power targets for 802.11g rates (6..54 Mbps).
+      8 entries, units are dBm.
+
+  pwr-table-11n-ht20:
+    type: array
+    description: |
+      TX power targets for 802.11n HT20 (MCS 0-7).
+      8 entries, units are dBm.
+
+  xtal-capcode-in:
+    type: int
+    description: XTAL input capacitor code.
+
+  xtal-capcode-out:
+    type: int
+    description: XTAL output capacitor code.

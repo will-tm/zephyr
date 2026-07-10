@@ -7,7 +7,11 @@
  * data path and event dispatch.
  */
 
+#if defined(CONFIG_SOC_SERIES_BL808)
+#define DT_DRV_COMPAT bflb_bl808_wifi
+#else
 #define DT_DRV_COMPAT bflb_bl60x_wifi
+#endif
 
 #include <string.h>
 #include <zephyr/device.h>
@@ -29,7 +33,7 @@
 LOG_MODULE_REGISTER(bflb_wifi, CONFIG_WIFI_LOG_LEVEL);
 
 BUILD_ASSERT(DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) == 1,
-	     "Only one bflb,bl60x-wifi instance supported");
+	     "Only one bflb wifi4 MAC instance supported");
 
 #define BFLB_WIFI_FW_READY_TIMEOUT_MS 5000
 #define BFLB_TX_BUF_MAX               1518U
@@ -43,22 +47,21 @@ BUILD_ASSERT(DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) == 1,
 #define EAPOL_KI_MIC       BIT(8)
 #define EAPOL_KI_SECURE    BIT(9)
 
-struct bflb_wifi_dev bflb_wifi;
+/* RX ring: tcpip_stack_input runs in firmware context; frames are staged
+ * here and drained into net_pkts from the system work queue.
+ */
+#define BFLB_RX_RING_CNT ((uint8_t)CONFIG_BFLB_WIFI_RX_RING_CNT)
+#define BFLB_RX_RING_SZ  1600U
+
+#define BFLB_RX_STAT_FORWARD BIT(0)
+#define BFLB_RX_FRAG_MAX     4
+
+#define BFLB_WIFI_EVENT_QUEUE_DEPTH 16
 
 struct bflb_wifi_event {
 	int code;
 	int value;
 };
-
-static struct k_work event_work;
-K_MSGQ_DEFINE(wifi_event_msgq, sizeof(struct bflb_wifi_event), 16, 4);
-static K_SEM_DEFINE(eapol_msg4_sem, 0, 1);
-
-/* RX ring: tcpip_stack_input runs in firmware context; frames are staged
- * here and drained into net_pkts from the system work queue.
- */
-#define BFLB_RX_RING_CNT 8U
-#define BFLB_RX_RING_SZ  1600U
 
 struct bflb_rx_slot {
 	uint8_t data[BFLB_RX_RING_SZ];
@@ -66,24 +69,40 @@ struct bflb_rx_slot {
 	bool used;
 };
 
+/* RX path.
+ *
+ * tcpip_stack_input is called by the blob's rxu_swdesc_upload_evt when the
+ * MAC HW delivers a received data frame.  pkt->pkt[i] are up to 4 fragment
+ * payload pointers; the ethernet frame starts at pkt[0] + msdu_offset.
+ * EAPOL frames don't reach here (the FW routes them to wpa_sta_rx_eapol).
+ */
+struct bflb_wifi_pkt {
+	uint32_t pkt[4];
+	void *pbuf[4];
+	uint16_t len[4];
+};
+
+struct bflb_wifi_dev bflb_wifi;
+
+static struct k_work event_work;
+K_MSGQ_DEFINE(wifi_event_msgq, sizeof(struct bflb_wifi_event), BFLB_WIFI_EVENT_QUEUE_DEPTH, 4);
+static K_SEM_DEFINE(eapol_msg4_sem, 0, 1);
 static struct bflb_rx_slot bflb_rx_ring[BFLB_RX_RING_CNT];
 static uint8_t bflb_rx_wr;
 static struct k_work bflb_rx_work;
+static uint8_t bflb_tx_stage[BFLB_TX_BUF_MAX];
 
-int bflb_wifi_wait_eapol_tx_done(k_timeout_t timeout)
-{
-	return k_sem_take(&eapol_msg4_sem, timeout);
-}
-
-void bflb_wifi_post_event(int code, int value)
-{
-	struct bflb_wifi_event evt = {.code = code, .value = value};
-
-	if (k_msgq_put(&wifi_event_msgq, &evt, K_NO_WAIT) != 0) {
-		LOG_WRN("WiFi event queue full, event %d dropped", code);
-	}
-	k_work_submit(&event_work);
-}
+static void handle_associated_event(struct bflb_wifi_dev *d);
+static void handle_connected_event(struct bflb_wifi_dev *d, int status);
+static void handle_disconnected_event(struct bflb_wifi_dev *d, int reason);
+static void event_work_handler(struct k_work *work);
+static void bflb_rx_work_handler(struct k_work *work);
+static int bflb_wifi_eapol_msg_num(const uint8_t *buf, size_t len);
+static int bflb_wifi_send(const struct device *dev, struct net_pkt *pkt);
+static void bflb_wifi_iface_init(struct net_if *iface);
+static enum ethernet_hw_caps bflb_wifi_get_capabilities(const struct device *dev,
+							struct net_if *iface);
+static int bflb_wifi_init(const struct device *dev);
 
 /* 802.11 assoc complete; bring L2 up so the supplicant can run the 4-way
  * handshake over the data path, and tell it association succeeded.
@@ -163,22 +182,6 @@ static void event_work_handler(struct k_work *work)
 	}
 }
 
-/* RX path.
- *
- * tcpip_stack_input is called by the blob's rxu_swdesc_upload_evt when the
- * MAC HW delivers a received data frame.  pkt->pkt[i] are up to 4 fragment
- * payload pointers; the ethernet frame starts at pkt[0] + msdu_offset.
- * EAPOL frames don't reach here (the FW routes them to wpa_sta_rx_eapol).
- */
-struct bflb_wifi_pkt {
-	uint32_t pkt[4];
-	void *pbuf[4];
-	uint16_t len[4];
-};
-
-#define BFLB_RX_STAT_FORWARD BIT(0)
-#define BFLB_RX_FRAG_MAX     4
-
 static void bflb_rx_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
@@ -211,65 +214,6 @@ static void bflb_rx_work_handler(struct k_work *work)
 	}
 }
 
-int tcpip_stack_input(void *swdesc, uint8_t status, void *hwhdr, unsigned int msdu_offset,
-		      void *pkt_v, uint8_t extra_status)
-{
-	struct bflb_wifi_pkt *pkt = pkt_v;
-	struct bflb_rx_slot *s;
-	size_t total, off;
-	uint8_t i;
-
-	ARG_UNUSED(swdesc);
-	ARG_UNUSED(hwhdr);
-	ARG_UNUSED(extra_status);
-
-	if (((status & BFLB_RX_STAT_FORWARD) == 0U) || (pkt == NULL)) {
-		return -EINVAL;
-	}
-	if ((pkt->pkt[0] == 0U) || (pkt->len[0] <= msdu_offset)) {
-		return -EINVAL;
-	}
-
-	total = (size_t)pkt->len[0] - msdu_offset;
-	for (i = 1; i < BFLB_RX_FRAG_MAX; i++) {
-		if (pkt->len[i] == 0U) {
-			break;
-		}
-		total += pkt->len[i];
-	}
-
-	s = &bflb_rx_ring[bflb_rx_wr];
-	if (s->used || (total > BFLB_RX_RING_SZ)) {
-		LOG_WRN("rx-drop: slot=%u used=%d total=%u", (unsigned int)bflb_rx_wr, s->used,
-			(unsigned int)total);
-		return -EINVAL;
-	}
-
-	off = pkt->len[0] - msdu_offset;
-	memcpy(s->data, (const uint8_t *)(uintptr_t)pkt->pkt[0] + msdu_offset, off);
-	for (i = 1; i < BFLB_RX_FRAG_MAX; i++) {
-		if (pkt->len[i] == 0U) {
-			break;
-		}
-		memcpy(s->data + off, (const void *)(uintptr_t)pkt->pkt[i], pkt->len[i]);
-		off += pkt->len[i];
-	}
-	s->len = (uint16_t)total;
-	s->used = true;
-	bflb_rx_wr = (bflb_rx_wr + 1U) % BFLB_RX_RING_CNT;
-
-	k_work_submit(&bflb_rx_work);
-	return -EINVAL;
-}
-
-/* RX control-path passthrough (diagnostics hook point). */
-extern int __real_rxu_cntrl_frame_handle(void *frame);
-
-int __wrap_rxu_cntrl_frame_handle(void *frame)
-{
-	return __real_rxu_cntrl_frame_handle(frame);
-}
-
 /* TX path. */
 
 static int bflb_wifi_eapol_msg_num(const uint8_t *buf, size_t len)
@@ -288,8 +232,6 @@ static int bflb_wifi_eapol_msg_num(const uint8_t *buf, size_t len)
 
 	return (ki & EAPOL_KI_SECURE) != 0 ? 4 : 2;
 }
-
-static uint8_t bflb_tx_stage[BFLB_TX_BUF_MAX];
 
 static int bflb_wifi_send(const struct device *dev, struct net_pkt *pkt)
 {
@@ -413,6 +355,72 @@ static int bflb_wifi_init(const struct device *dev)
 
 	LOG_DBG("WiFi driver initialized");
 	return 0;
+}
+
+int bflb_wifi_wait_eapol_tx_done(k_timeout_t timeout)
+{
+	return k_sem_take(&eapol_msg4_sem, timeout);
+}
+
+void bflb_wifi_post_event(int code, int value)
+{
+	struct bflb_wifi_event evt = {.code = code, .value = value};
+
+	if (k_msgq_put(&wifi_event_msgq, &evt, K_NO_WAIT) != 0) {
+		LOG_WRN("WiFi event queue full, event %d dropped", code);
+	}
+	k_work_submit(&event_work);
+}
+
+int tcpip_stack_input(void *swdesc, uint8_t status, void *hwhdr, unsigned int msdu_offset,
+		      void *pkt_v, uint8_t extra_status)
+{
+	struct bflb_wifi_pkt *pkt = pkt_v;
+	struct bflb_rx_slot *s;
+	size_t total, off;
+	uint8_t i;
+
+	ARG_UNUSED(swdesc);
+	ARG_UNUSED(hwhdr);
+	ARG_UNUSED(extra_status);
+
+	if (((status & BFLB_RX_STAT_FORWARD) == 0U) || (pkt == NULL)) {
+		return -EINVAL;
+	}
+	if ((pkt->pkt[0] == 0U) || (pkt->len[0] <= msdu_offset)) {
+		return -EINVAL;
+	}
+
+	total = (size_t)pkt->len[0] - msdu_offset;
+	for (i = 1; i < BFLB_RX_FRAG_MAX; i++) {
+		if (pkt->len[i] == 0U) {
+			break;
+		}
+		total += pkt->len[i];
+	}
+
+	s = &bflb_rx_ring[bflb_rx_wr];
+	if (s->used || (total > BFLB_RX_RING_SZ)) {
+		LOG_WRN("rx-drop: slot=%u used=%d total=%u", (unsigned int)bflb_rx_wr, s->used,
+			(unsigned int)total);
+		return -EINVAL;
+	}
+
+	off = pkt->len[0] - msdu_offset;
+	memcpy(s->data, (const uint8_t *)(uintptr_t)pkt->pkt[0] + msdu_offset, off);
+	for (i = 1; i < BFLB_RX_FRAG_MAX; i++) {
+		if (pkt->len[i] == 0U) {
+			break;
+		}
+		memcpy(s->data + off, (const void *)(uintptr_t)pkt->pkt[i], pkt->len[i]);
+		off += pkt->len[i];
+	}
+	s->len = (uint16_t)total;
+	s->used = true;
+	bflb_rx_wr = (bflb_rx_wr + 1U) % BFLB_RX_RING_CNT;
+
+	k_work_submit(&bflb_rx_work);
+	return -EINVAL;
 }
 
 static const struct net_wifi_mgmt_offload bflb_wifi_api = {

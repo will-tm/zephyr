@@ -73,7 +73,7 @@ LOG_MODULE_DECLARE(bflb_wifi, CONFIG_WIFI_LOG_LEVEL);
 
 /* MM/ME init parameters (vendor defaults). */
 #define BFLB_TX_LIFETIME_MS         2000U
-#define BFLB_MM_PHY_PARAM_BL602     0x1U
+#define BFLB_MM_PHY_PARAM_BAND0     0x1U /* only band-config the 2.4G PHY supports */
 #define BFLB_MM_UAPSD_TIMEOUT_US    3000U
 #define BFLB_MM_LP_CLK_ACCURACY_PPM 20U
 #define BFLB_TX_POWER_DBM           20U
@@ -103,6 +103,17 @@ struct mm_version_cfm_raw {
 	uint32_t features;
 };
 
+struct bflb_sm_disconnect_req {
+	uint16_t reason_code;
+	uint8_t vif_idx;
+};
+
+struct bflb_sm_disconnect_ind {
+	uint16_t status_code;
+	uint16_t reason_code;
+	uint8_t vif_idx;
+};
+
 static const uint16_t bflb_ch_freq[14] = {
 	2412, 2417, 2422, 2427, 2432, 2437, 2442, 2447, 2452, 2457, 2462, 2467, 2472, 2484,
 };
@@ -113,13 +124,51 @@ extern int bl_wifi_register_wpa_cb_internal(const struct wpa_funcs *cb);
 extern int bl_wifi_set_appie_internal(uint8_t vif_idx, wifi_appie_t type, uint8_t *ie, uint16_t len,
 				      bool sta);
 
-/* Firmware-workaround timers (see bflb_rx_batch_reset_handler). */
-extern uint8_t rxl_cntrl_env[];
-extern uint8_t vif_info_tab[];
-#define BFLB_RXL_CNTRL_BATCH_OFF 20U
-#define BFLB_RX_BATCH_RESET_MS   20
-#define BFLB_VIF_TBTT_CNT_OFF    0x74U
-#define BFLB_VIF_MAX             2U
+static bool bssid_is_specific(const uint8_t *bssid);
+static bool bridge_sta_init(void);
+static bool bridge_sta_deinit(void);
+static void bridge_sta_config(wifi_connect_parm_t *p);
+static void bridge_sta_connect(wifi_connect_parm_t *p);
+static void bridge_sta_disconnected(uint8_t reason);
+static int bridge_sta_rx_eapol(uint8_t *src, uint8_t *buf, uint32_t len);
+static uint8_t bflb_rsn_suite_to_cipher(const uint8_t *oui_suite);
+static int bridge_parse_wpa_ie(const uint8_t *ie, size_t len, wifi_wpa_ie_t *out);
+static bool bridge_stub_false(void *a);
+static void bridge_stub_void(void *a);
+static bool bridge_stub_ap_join(void **sm, uint8_t *mac, uint8_t *ie, uint8_t ie_len);
+static void bridge_stub_ap_sta_associated(void *sm, uint8_t sta_idx);
+static bool bridge_stub_ap_rx_eapol(void *hapd, void *sm, uint8_t *data, size_t len);
+static void bflb_nxmac_write_addr(const uint8_t addr[BFLB_WIFI_MAC_ADDR_LEN], uint32_t reg_lo,
+				  uint32_t reg_hi);
+static int bflb_send_status_cmd(struct bflb_wifi_dev *d, const char *name, uint16_t req_id,
+				uint16_t cfm_id, const void *params, uint32_t params_len,
+				uint32_t *cfm_status);
+static void bflb_init_me_config(struct me_config_req *m);
+static void bflb_init_chan_config(struct me_chan_config_req *c);
+static void bflb_connect_fill_bssid(struct bflb_wifi_dev *d, struct sm_connect_req *req,
+				    const struct bflb_wifi_connect_params *p);
+static void bflb_handle_sm_connect_ind(struct bflb_wifi_dev *d, const struct sm_connect_ind *ind);
+
+static const struct wpa_funcs bridge_wpa_cb = {
+	.wpa_sta_init = bridge_sta_init,
+	.wpa_sta_deinit = bridge_sta_deinit,
+	.wpa_sta_config = bridge_sta_config,
+	.wpa_sta_connect = bridge_sta_connect,
+	.wpa_sta_disconnected_cb = bridge_sta_disconnected,
+	.wpa_sta_rx_eapol = bridge_sta_rx_eapol,
+	.wpa_ap_init = NULL,
+	.wpa_ap_deinit = bridge_stub_false,
+	.wpa_ap_join = bridge_stub_ap_join,
+	.wpa_ap_sta_associated = bridge_stub_ap_sta_associated,
+	.wpa_ap_remove = bridge_stub_false,
+	.wpa_ap_rx_eapol = bridge_stub_ap_rx_eapol,
+	.wpa_parse_wpa_ie = bridge_parse_wpa_ie,
+	.wpa_reg_diag_tlv_cb = bridge_stub_void,
+	.wpa3_build_sae_msg = bflb_wifi_sae_build,
+	.wpa3_parse_sae_msg = bflb_wifi_sae_parse,
+	.wpa3_clear_sae = bflb_wifi_sae_clear,
+};
+
 
 static bool bssid_is_specific(const uint8_t *bssid)
 {
@@ -128,27 +177,6 @@ static bool bssid_is_specific(const uint8_t *bssid)
 	memcpy(a.addr, bssid, sizeof(a.addr));
 	return !net_eth_is_addr_unspecified(&a) && !net_eth_is_addr_broadcast(&a);
 }
-
-/* RX-batch counter unstick: rxu_swdesc_upload_evt drops new RX descs once
- * `rxl_cntrl_env + 20` reaches 5.  On a busy channel the counter pegs and
- * unicast RX (e.g. DHCP OFFER) gets dropped.  Periodically reset it.
- * Also zero the per-VIF TBTT counter: once it exceeds 100 the FW sends a
- * null-data probe through a TX path the SW-CCMP wrap can't service, the
- * probe fails and the FW tears the link down.
- */
-static void bflb_rx_batch_reset_handler(struct k_timer *t)
-{
-	ARG_UNUSED(t);
-	*(volatile uint32_t *)&rxl_cntrl_env[BFLB_RXL_CNTRL_BATCH_OFF] = 0U;
-
-	for (uint8_t i = 0; i < BFLB_VIF_MAX; i++) {
-		uint8_t *vif = &vif_info_tab[i * BFLB_WIFI_VIF_INFO_STRIDE];
-
-		vif[BFLB_VIF_TBTT_CNT_OFF] = 0U;
-	}
-}
-
-static K_TIMER_DEFINE(bflb_rx_batch_timer, bflb_rx_batch_reset_handler, NULL);
 
 /* wpa_funcs bridge.
  *
@@ -398,26 +426,6 @@ static bool bridge_stub_ap_rx_eapol(void *hapd, void *sm, uint8_t *data, size_t 
 	return false;
 }
 
-static const struct wpa_funcs bridge_wpa_cb = {
-	.wpa_sta_init = bridge_sta_init,
-	.wpa_sta_deinit = bridge_sta_deinit,
-	.wpa_sta_config = bridge_sta_config,
-	.wpa_sta_connect = bridge_sta_connect,
-	.wpa_sta_disconnected_cb = bridge_sta_disconnected,
-	.wpa_sta_rx_eapol = bridge_sta_rx_eapol,
-	.wpa_ap_init = NULL,
-	.wpa_ap_deinit = bridge_stub_false,
-	.wpa_ap_join = bridge_stub_ap_join,
-	.wpa_ap_sta_associated = bridge_stub_ap_sta_associated,
-	.wpa_ap_remove = bridge_stub_false,
-	.wpa_ap_rx_eapol = bridge_stub_ap_rx_eapol,
-	.wpa_parse_wpa_ie = bridge_parse_wpa_ie,
-	.wpa_reg_diag_tlv_cb = bridge_stub_void,
-	.wpa3_build_sae_msg = bflb_wifi_sae_build,
-	.wpa3_parse_sae_msg = bflb_wifi_sae_parse,
-	.wpa3_clear_sae = bflb_wifi_sae_clear,
-};
-
 /* Write a 6-byte MAC address into a pair of NXMAC lo/hi registers. */
 static void bflb_nxmac_write_addr(const uint8_t addr[BFLB_WIFI_MAC_ADDR_LEN], uint32_t reg_lo,
 				  uint32_t reg_hi)
@@ -473,6 +481,51 @@ static void bflb_init_chan_config(struct me_chan_config_req *c)
 	c->chan2G4_cnt = BFLB_SCAN_CHAN_NUM;
 }
 
+/* Wildcard BSSID triggers a status-14 join failure on this blob; resolve
+ * from the scan cache when the caller didn't pin one.
+ */
+static void bflb_connect_fill_bssid(struct bflb_wifi_dev *d, struct sm_connect_req *req,
+				    const struct bflb_wifi_connect_params *p)
+{
+	const struct bflb_scan_ap *ap;
+
+	if ((p->bssid != NULL) && bssid_is_specific(p->bssid)) {
+		memcpy(req->bssid.array, p->bssid, BFLB_WIFI_MAC_ADDR_LEN);
+		memcpy(d->connected_bssid, p->bssid, BFLB_WIFI_MAC_ADDR_LEN);
+		return;
+	}
+
+	ap = bflb_wifi_scan_find_ssid(p->ssid, p->ssid_len);
+	if (ap != NULL) {
+		memcpy(req->bssid.array, ap->bssid, BFLB_WIFI_MAC_ADDR_LEN);
+		memcpy(d->connected_bssid, ap->bssid, BFLB_WIFI_MAC_ADDR_LEN);
+		d->connected_rssi = ap->rssi;
+	} else {
+		memset(req->bssid.array, 0xFF, BFLB_WIFI_MAC_ADDR_LEN);
+	}
+}
+
+static void bflb_handle_sm_connect_ind(struct bflb_wifi_dev *d, const struct sm_connect_ind *ind)
+{
+	LOG_INF("connect status=%u reason=%u vif=%u ap=%u qos=%u freq=%u", ind->status_code,
+		ind->reason_code, ind->vif_idx, ind->ap_idx, ind->qos, ind->center_freq);
+
+	if (ind->status_code == 0U) {
+		d->vif_idx = ind->vif_idx;
+		d->sta_idx = ind->ap_idx;
+		g_supp_ctx.sta_idx = ind->ap_idx;
+		if (bssid_is_specific(ind->bssid.array)) {
+			memcpy(d->connected_bssid, ind->bssid.array, BFLB_WIFI_MAC_ADDR_LEN);
+		}
+		d->connected_freq = ind->center_freq;
+		/* BSS address feeds the MAC HW RX filter. */
+		bflb_nxmac_write_addr(d->connected_bssid, NXMAC_BSS_ADDR_LOW_REG,
+				      NXMAC_BSS_ADDR_HIGH_REG);
+	}
+
+	bflb_wifi_post_event(BFLB_WIFI_EVT_CONNECTED, ind->status_code);
+}
+
 int bflb_wifi_mac_init(struct bflb_wifi_dev *d)
 {
 	struct mm_version_cfm_raw ver = {0};
@@ -518,10 +571,10 @@ int bflb_wifi_mac_init(struct bflb_wifi_dev *d)
 	(void)bflb_send_status_cmd(d, "ME_CHAN_CONFIG", ME_CHAN_CONFIG_REQ, ME_CHAN_CONFIG_CFM,
 				   &chancfg, sizeof(chancfg), &cfm_status);
 
-	/* phy_cfg.parameters[0] selects the only band-config the BL602 PHY
+	/* phy_cfg.parameters[0] selects the only band-config the 2.4 GHz PHY
 	 * supports; uapsd/lp_clk values mirror the vendor module defaults.
 	 */
-	start_req.phy_cfg.parameters[0] = BFLB_MM_PHY_PARAM_BL602;
+	start_req.phy_cfg.parameters[0] = BFLB_MM_PHY_PARAM_BAND0;
 	start_req.uapsd_timeout = BFLB_MM_UAPSD_TIMEOUT_US;
 	start_req.lp_clk_accuracy = BFLB_MM_LP_CLK_ACCURACY_PPM;
 	ret = bflb_send_status_cmd(d, "MM_START", MM_START_REQ, MM_START_CFM, &start_req,
@@ -554,33 +607,8 @@ int bflb_wifi_mac_init(struct bflb_wifi_dev *d)
 	bflb_nxmac_write_addr(d->mac_addr, NXMAC_MAC_ADDR_LOW_REG, NXMAC_MAC_ADDR_HIGH_REG);
 
 	bflb_mac_init_done = true;
-	k_timer_start(&bflb_rx_batch_timer, K_MSEC(BFLB_RX_BATCH_RESET_MS),
-		      K_MSEC(BFLB_RX_BATCH_RESET_MS));
+	bflb_wifi_blob_mac_init_done(d);
 	return 0;
-}
-
-/* Wildcard BSSID triggers a status-14 join failure on this blob; resolve
- * from the scan cache when the caller didn't pin one.
- */
-static void bflb_connect_fill_bssid(struct bflb_wifi_dev *d, struct sm_connect_req *req,
-				    const struct bflb_wifi_connect_params *p)
-{
-	const struct bflb_scan_ap *ap;
-
-	if ((p->bssid != NULL) && bssid_is_specific(p->bssid)) {
-		memcpy(req->bssid.array, p->bssid, BFLB_WIFI_MAC_ADDR_LEN);
-		memcpy(d->connected_bssid, p->bssid, BFLB_WIFI_MAC_ADDR_LEN);
-		return;
-	}
-
-	ap = bflb_wifi_scan_find_ssid(p->ssid, p->ssid_len);
-	if (ap != NULL) {
-		memcpy(req->bssid.array, ap->bssid, BFLB_WIFI_MAC_ADDR_LEN);
-		memcpy(d->connected_bssid, ap->bssid, BFLB_WIFI_MAC_ADDR_LEN);
-		d->connected_rssi = ap->rssi;
-	} else {
-		memset(req->bssid.array, 0xFF, BFLB_WIFI_MAC_ADDR_LEN);
-	}
 }
 
 int bflb_wifi_connect_req(struct bflb_wifi_dev *d, const struct bflb_wifi_connect_params *p)
@@ -693,17 +721,6 @@ int bflb_wifi_connect_req(struct bflb_wifi_dev *d, const struct bflb_wifi_connec
 	return 0;
 }
 
-struct bflb_sm_disconnect_req {
-	uint16_t reason_code;
-	uint8_t vif_idx;
-};
-
-struct bflb_sm_disconnect_ind {
-	uint16_t status_code;
-	uint16_t reason_code;
-	uint8_t vif_idx;
-};
-
 int bflb_wifi_disconnect_req(struct bflb_wifi_dev *d)
 {
 	struct bflb_sm_disconnect_req req = {
@@ -735,27 +752,6 @@ int bflb_wifi_set_ps_mode_off(struct bflb_wifi_dev *d)
 
 	return bflb_wifi_ipc_send_cmd(d, MM_SET_PS_MODE_REQ, MM_SET_PS_MODE_CFM, &ps, sizeof(ps),
 				      &cfm, sizeof(cfm));
-}
-
-static void bflb_handle_sm_connect_ind(struct bflb_wifi_dev *d, const struct sm_connect_ind *ind)
-{
-	LOG_INF("connect status=%u reason=%u vif=%u ap=%u qos=%u freq=%u", ind->status_code,
-		ind->reason_code, ind->vif_idx, ind->ap_idx, ind->qos, ind->center_freq);
-
-	if (ind->status_code == 0U) {
-		d->vif_idx = ind->vif_idx;
-		d->sta_idx = ind->ap_idx;
-		g_supp_ctx.sta_idx = ind->ap_idx;
-		if (bssid_is_specific(ind->bssid.array)) {
-			memcpy(d->connected_bssid, ind->bssid.array, BFLB_WIFI_MAC_ADDR_LEN);
-		}
-		d->connected_freq = ind->center_freq;
-		/* BSS address feeds the MAC HW RX filter. */
-		bflb_nxmac_write_addr(d->connected_bssid, NXMAC_BSS_ADDR_LOW_REG,
-				      NXMAC_BSS_ADDR_HIGH_REG);
-	}
-
-	bflb_wifi_post_event(BFLB_WIFI_EVT_CONNECTED, ind->status_code);
 }
 
 void bflb_wifi_handle_e2a_msg(struct bflb_wifi_dev *d, uint16_t id, const void *payload,

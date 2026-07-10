@@ -1,0 +1,48 @@
+/*
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * BL808 M0 WiFi DT snippet.
+ *
+ * Enables the WiFi MAC and carves the top 88 KB of WRAM out as WIFI_RAM
+ * (uncached bus view at 0x22042000) for the wifi4 firmware shared memory
+ * (.fw.SHRAMIPC / .fw.SHRAM, ~86 KB: IPC env, TX buffers, MAC HW DMA
+ * descriptor pools).  all_ram (the cacheable alias at 0x62020000) is
+ * scaled down to the remaining 136 KB so the linker enforces the
+ * boundary and never maps the same physical WRAM twice.
+ */
+
+&all_ram {
+	reg = <0x62020000 DT_SIZE_K(136)>;
+	ranges = <0x0 0x62020000 DT_SIZE_K(136)>;
+};
+
+&wram {
+	reg = <0x10000 DT_SIZE_K(72)>;
+	ranges = <0x0 0x10000 DT_SIZE_K(72)>;
+};
+
+/ {
+	soc {
+		/* Top 88 KB of WRAM through the uncached bus view -- the
+		 * WiFi MAC HW DMA descriptor pools and IPC shared memory
+		 * (~86 KB) live at this address; the MAC DMA reaches
+		 * neither the cacheable alias nor PSRAM.
+		 */
+		wifi_ram: memory@22042000 {
+			compatible = "zephyr,memory-region", "mmio-sram";
+			reg = <0x22042000 DT_SIZE_K(88)>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges = <0x0 0x22042000 DT_SIZE_K(88)>;
+			zephyr,memory-region = "WIFI_RAM";
+		};
+	};
+};
+
+&wifi0 {
+	status = "okay";
+};

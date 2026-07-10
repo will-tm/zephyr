@@ -330,6 +330,25 @@ void __attribute__((naked)) soc_reset_hook(void)
 	__asm__ volatile("ret");
 }
 
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(wifi_ram))
+/* WIFI_RAM is a custom memory-region -- Zephyr's arch_data_copy /
+ * arch_bss_zero do not touch it.  Zero it here so the WiFi blob's
+ * .fw.SHRAM / .fw.SHRAMIPC objects (which the linker places NOLOAD)
+ * start in a known state.
+ */
+static void bl808_zero_wifi_ram(void)
+{
+	volatile uint32_t *r = (volatile uint32_t *)DT_REG_ADDR(DT_NODELABEL(wifi_ram));
+	size_t cnt = DT_REG_SIZE(DT_NODELABEL(wifi_ram)) / sizeof(uint32_t);
+
+	while (cnt > 0U) {
+		*r = 0U;
+		r++;
+		cnt--;
+	}
+}
+#endif
+
 void soc_prep_hook(void)
 {
 	uint32_t tmp;
@@ -349,6 +368,10 @@ void soc_early_init_hook(void)
 
 	soc_bl808_halt_secondary_cores();
 	system_sysmap_init();
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(wifi_ram))
+	bl808_zero_wifi_ram();
+#endif
 
 	sys_cache_data_flush_all();
 	sys_cache_instr_invd_all();

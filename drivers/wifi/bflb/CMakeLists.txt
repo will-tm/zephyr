@@ -16,4 +16,6 @@ zephyr_library_link_libraries(hostap)
 
 # SoC-specific driver sources.
 add_subdirectory_ifdef(CONFIG_SOC_SERIES_BL61X bl61x)
-add_subdirectory_ifdef(CONFIG_SOC_SERIES_BL60X bl60x)
+if(CONFIG_SOC_SERIES_BL60X OR CONFIG_SOC_SERIES_BL808)
+  add_subdirectory(wifi4)
+endif()
