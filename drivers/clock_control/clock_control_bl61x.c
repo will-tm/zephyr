@@ -78,6 +78,8 @@ enum bl61x_clkid {
 	bl61x_clkid_clk_aupll = BL61X_CLKID_CLK_AUPLL,
 	bl61x_clkid_clk_bclk = BL61X_CLKID_CLK_BCLK,
 	bl61x_clkid_clk_160mux = BL61X_CLKID_CLK_160M,
+	bl61x_clkid_clk_cam = BL61X_CLKID_CLK_CAM,
+	bl61x_clkid_clk_cam_ref = BL61X_CLKID_CLK_CAM_REF,
 	bl61x_clkid_clk_f32k = BL61X_CLKID_CLK_F32K,
 	bl61x_clkid_clk_xtal32k = BL61X_CLKID_CLK_XTAL32K,
 	bl61x_clkid_clk_rc32k = BL61X_CLKID_CLK_RC32K,
@@ -991,6 +993,7 @@ static void clock_control_bl61x_setup_wifipll(const struct device *dev)
 	clock_control_bl61x_ungate_pll(GLB_CGEN_TOP_WIFIPLL_320M_POS);
 	clock_control_bl61x_ungate_pll(GLB_CGEN_TOP_WIFIPLL_240M_POS);
 	clock_control_bl61x_ungate_pll(GLB_CGEN_PSRAMB_WIFIPLL_320M_POS);
+	clock_control_bl61x_ungate_pll(GLB_CGEN_ISP_WIFIPLL_80M_POS);
 
 }
 
@@ -1470,6 +1473,80 @@ static void clock_control_bl61x_uart_set_clock(bool enable, uint32_t source_cloc
 	clock_control_bl61x_uart_set_clock_enable(enable);
 }
 
+/* Camera interface clock, ISP_MUXPLL_80M_SEL picks:
+ * WIFIPLL 80MHz: 0
+ * AUPLL DIV5: 1
+ * AUPLL DIV6: 2 and 3
+ */
+static uint32_t clock_control_bl61x_get_cam(const struct device *dev)
+{
+	struct clock_control_bl61x_data *data = dev->data;
+	uint32_t tmp;
+
+	tmp = sys_read32(GLB_BASE + GLB_DIG_CLK_CFG1_OFFSET);
+	tmp = (tmp & GLB_REG_ISP_MUXPLL_80M_SEL_MSK) >> GLB_REG_ISP_MUXPLL_80M_SEL_POS;
+
+	if (tmp == 0) {
+		return BFLB_MUL_CLK(MHZ(80), data->wifipll.top_frequency,
+				    BL61X_WIFIPLL_TOP_FREQ);
+	} else if (tmp == 1) {
+		return data->aupll.top_frequency / 5;
+	}
+	return data->aupll.top_frequency / 6;
+}
+
+/* Camera reference clock, the source select picks the same sources as below */
+static uint32_t clock_control_bl61x_get_cam_ref(const struct device *dev)
+{
+	struct clock_control_bl61x_data *data = dev->data;
+	uint32_t tmp;
+	uint32_t parent;
+	uint32_t divider;
+
+	tmp = sys_read32(GLB_BASE + GLB_CAM_CFG0_OFFSET);
+	if ((tmp & GLB_REG_CAM_REF_CLK_EN_MSK) == 0) {
+		return 0;
+	}
+
+	divider = ((tmp & GLB_REG_CAM_REF_CLK_DIV_MSK) >> GLB_REG_CAM_REF_CLK_DIV_POS) + 1;
+	tmp = (tmp & GLB_REG_CAM_REF_CLK_SRC_SEL_MSK) >> GLB_REG_CAM_REF_CLK_SRC_SEL_POS;
+
+	if (tmp == 0) {
+		parent = clock_control_bl61x_get_xclk(dev);
+	} else if (tmp == 1) {
+		parent = BFLB_MUL_CLK(MHZ(96), data->wifipll.top_frequency,
+				      BL61X_WIFIPLL_TOP_FREQ);
+	} else {
+		parent = data->aupll.top_frequency / 5;
+	}
+
+	return parent / divider;
+}
+
+/* Clock:
+ * XCLK: 0
+ * WIFIPLL 96MHz: 1
+ * AUPLL DIV5: 2
+ */
+static void clock_control_bl61x_cam_set_clock(bool enable, uint32_t source_clock, uint32_t divider)
+{
+	uint32_t tmp;
+
+	tmp = sys_read32(GLB_BASE + GLB_CAM_CFG0_OFFSET);
+	tmp &= GLB_REG_CAM_REF_CLK_EN_UMSK;
+	sys_write32(tmp, GLB_BASE + GLB_CAM_CFG0_OFFSET);
+
+	tmp = (tmp & GLB_REG_CAM_REF_CLK_SRC_SEL_UMSK)
+		| (source_clock << GLB_REG_CAM_REF_CLK_SRC_SEL_POS);
+	tmp = (tmp & GLB_REG_CAM_REF_CLK_DIV_UMSK) | (divider << GLB_REG_CAM_REF_CLK_DIV_POS);
+	sys_write32(tmp, GLB_BASE + GLB_CAM_CFG0_OFFSET);
+
+	if (enable) {
+		tmp |= GLB_REG_CAM_REF_CLK_EN_MSK;
+		sys_write32(tmp, GLB_BASE + GLB_CAM_CFG0_OFFSET);
+	}
+}
+
 /* Leave only minimal peripherals on */
 static void clock_control_bl61x_gate_all_peripherals(void)
 {
@@ -1542,6 +1619,8 @@ static void clock_control_bl61x_peripheral_clock_init(void)
 	sys_write32(regval, GLB_BASE + GLB_CGEN_CFG1_OFFSET);
 
 	regval = sys_read32(GLB_BASE + GLB_CGEN_CFG2_OFFSET);
+	/* enable EMI MISC clock routing, the camera AXI write path goes through it */
+	regval |= (1U << 16);
 	/* enable PSRAM clock routing */
 	regval |= (1U << 18);
 	/* enable SDH clock routing */
@@ -1553,6 +1632,50 @@ static void clock_control_bl61x_peripheral_clock_init(void)
 	 * the BL61x CAN controller core clock is the UART clock / 2.
 	 */
 	clock_control_bl61x_uart_set_clock(true, 0, 3);
+}
+
+/* The reference clock an image sensor is given is a board and sensor property,
+ * so it is composed from whichever source can produce the requested rate.
+ */
+static int clock_control_bl61x_cam_ref_set_rate(const struct device *dev, uint32_t rate)
+{
+	struct clock_control_bl61x_data *data = dev->data;
+	uint32_t sources[3];
+	uint32_t divider;
+
+	if (rate == 0) {
+		clock_control_bl61x_cam_set_clock(false, 0, 0);
+		return 0;
+	}
+
+	sources[0] = clock_control_bl61x_get_xclk(dev);
+	sources[1] = data->wifipll.enabled
+		? BFLB_MUL_CLK(MHZ(96), data->wifipll.top_frequency, BL61X_WIFIPLL_TOP_FREQ) : 0;
+	sources[2] = data->aupll.enabled ? data->aupll.top_frequency / 5 : 0;
+
+	for (uint32_t source = 0; source < ARRAY_SIZE(sources); source++) {
+		if (sources[source] == 0) {
+			continue;
+		}
+		for (divider = 1; divider <= 4; divider++) {
+			if ((sources[source] / divider) == rate) {
+				clock_control_bl61x_cam_set_clock(true, source, divider - 1);
+				return 0;
+			}
+		}
+	}
+
+	return -ENOTSUP;
+}
+
+static int clock_control_bl61x_set_rate(const struct device *dev, clock_control_subsys_t sys,
+					clock_control_subsys_rate_t rate)
+{
+	if ((enum bl61x_clkid)sys != bl61x_clkid_clk_cam_ref) {
+		return -ENOTSUP;
+	}
+
+	return clock_control_bl61x_cam_ref_set_rate(dev, (uint32_t)(uintptr_t)rate);
 }
 
 static int clock_control_bl61x_on(const struct device *dev, clock_control_subsys_t sys)
@@ -1724,6 +1847,10 @@ static int clock_control_bl61x_get_rate(const struct device *dev, clock_control_
 		} else {
 			return -EINVAL;
 		}
+	} else if  ((enum bl61x_clkid)sys == bl61x_clkid_clk_cam) {
+		*rate = clock_control_bl61x_get_cam(dev);
+	} else if  ((enum bl61x_clkid)sys == bl61x_clkid_clk_cam_ref) {
+		*rate = clock_control_bl61x_get_cam_ref(dev);
 	} else if  ((enum bl61x_clkid)sys == bl61x_clkid_clk_rc32m) {
 		*rate = BFLB_RC32M_FREQUENCY;
 	} else {
@@ -1762,6 +1889,7 @@ static DEVICE_API(clock_control, clock_control_bl61x_api) = {
 	.on = clock_control_bl61x_on,
 	.off = clock_control_bl61x_off,
 	.get_rate = clock_control_bl61x_get_rate,
+	.set_rate = clock_control_bl61x_set_rate,
 	.get_status = clock_control_bl61x_get_status,
 };
 
