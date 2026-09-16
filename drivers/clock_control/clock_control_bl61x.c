@@ -814,18 +814,18 @@ static void clock_control_bl61x_ungate_pll(uint8_t pll)
 {
 	uint32_t tmp;
 
-	tmp = sys_read32(PDS_BASE + GLB_CGEN_CFG3_OFFSET);
+	tmp = sys_read32(GLB_BASE + GLB_CGEN_CFG3_OFFSET);
 	tmp |= (1U << pll);
-	sys_write32(tmp, PDS_BASE + GLB_CGEN_CFG3_OFFSET);
+	sys_write32(tmp, GLB_BASE + GLB_CGEN_CFG3_OFFSET);
 }
 
 static void clock_control_bl61x_gate_pll(uint8_t pll)
 {
 	uint32_t tmp;
 
-	tmp = sys_read32(PDS_BASE + GLB_CGEN_CFG3_OFFSET);
+	tmp = sys_read32(GLB_BASE + GLB_CGEN_CFG3_OFFSET);
 	tmp &= ~(1U << pll);
-	sys_write32(tmp, PDS_BASE + GLB_CGEN_CFG3_OFFSET);
+	sys_write32(tmp, GLB_BASE + GLB_CGEN_CFG3_OFFSET);
 }
 
 static int clock_control_bl61x_clock_trim_32M(void)
