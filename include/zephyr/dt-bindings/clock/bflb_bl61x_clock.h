@@ -40,6 +40,10 @@
 #define BL61X_CLKID_CLK_AUPLL   (BFLB_CLKID_CLK_PRIVATE + 1)
 /** This clock is muxed off the PLLs to provide 160MHz */
 #define BL61X_CLKID_CLK_160M    (BFLB_CLKID_CLK_PRIVATE + 2)
+/** Camera interface clock, muxed off the PLLs to provide 80MHz */
+#define BL61X_CLKID_CLK_CAM     (BFLB_CLKID_CLK_PRIVATE + 3)
+/** Camera reference clock, driven out to an image sensor as its input clock */
+#define BL61X_CLKID_CLK_CAM_REF (BFLB_CLKID_CLK_PRIVATE + 4)
 
 /** ID 0, AUPLL / 2  */
 #define BL61X_AUPLL_ID_DIV2	0
