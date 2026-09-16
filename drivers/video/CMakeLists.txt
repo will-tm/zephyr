@@ -6,6 +6,7 @@ zephyr_library_sources(video_common.c)
 
 # zephyr-keep-sorted-start
 zephyr_library_sources_ifdef(CONFIG_VIDEO_ARDUCAM_MEGA video_arducam_mega.c)
+zephyr_library_sources_ifdef(CONFIG_VIDEO_BFLB_DVP video_bflb_dvp.c)
 zephyr_library_sources_ifdef(CONFIG_VIDEO_EMUL_IMAGER video_emul_imager.c)
 zephyr_library_sources_ifdef(CONFIG_VIDEO_EMUL_RX video_emul_rx.c)
 zephyr_library_sources_ifdef(CONFIG_VIDEO_ESP32 video_esp32_dvp.c)
@@ -88,6 +89,12 @@ if(CONFIG_VIDEO_SW_GENERATOR)
             ${ZEPHYR_BINARY_DIR}/include/generated/video_sw_generator_h264.inc
         )
     endif()
+endif()
+
+if(CONFIG_VIDEO_BFLB_DVP)
+  zephyr_library_include_directories(
+    ${ZEPHYR_HAL_BOUFFALOLAB_MODULE_DIR}/include/bouffalolab/common
+  )
 endif()
 
 zephyr_linker_sources(DATA_SECTIONS video.ld)

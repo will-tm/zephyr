@@ -1,0 +1,56 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config VIDEO_BFLB_DVP
+	bool "Bouffalo Lab DVP camera interface"
+	default y
+	depends on DT_HAS_BFLB_DVP_ENABLED
+	select PINCTRL
+	help
+	  Enable the Bouffalo Lab DVP capture interface.
+
+if VIDEO_BFLB_DVP
+
+config VIDEO_BFLB_DVP_CLOCK_INIT_PRIORITY
+	int "DVP clock and pin muxing initialization priority"
+	default 55
+	help
+	  Initialization priority of the sensor reference clock and the DVP
+	  pins. It must be lower than VIDEO_INIT_PRIORITY so that the clock
+	  reaches the sensor before its own initialization talks to it.
+
+config VIDEO_BFLB_DVP_RING_SIZE
+	int "Size in bytes of the capture ring"
+	default 1228800
+	help
+	  The controller fills a ring of frames of its own while the frame it
+	  completed is copied into the enqueued buffer, so the ring has to hold
+	  two frames of the largest format in use. The default is two 640x480
+	  YUYV frames.
+
+config VIDEO_BFLB_DVP_RING_ZEPHYR_REGION
+	bool "Place the capture ring in a Zephyr memory-region"
+	help
+	  Place the capture ring in a region created from a
+	  'zephyr,memory-region' compatible node, named by
+	  VIDEO_BFLB_DVP_RING_ZEPHYR_REGION_NAME. A ring large enough for VGA
+	  does not fit in SRAM on most of these parts.
+
+config VIDEO_BFLB_DVP_RING_ZEPHYR_REGION_NAME
+	string "Name of the memory-region holding the capture ring"
+	depends on VIDEO_BFLB_DVP_RING_ZEPHYR_REGION
+
+config VIDEO_BFLB_DVP_THREAD_STACK_SIZE
+	int "Capture thread stack size"
+	default 1024
+	help
+	  Stack size of the thread copying completed frames out of the ring.
+
+config VIDEO_BFLB_DVP_THREAD_PRIORITY
+	int "Capture thread priority"
+	default 2
+	help
+	  Cooperative priority of the thread copying completed frames out of
+	  the ring. It has one frame period to finish each copy.
+
+endif # VIDEO_BFLB_DVP

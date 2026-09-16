@@ -1,0 +1,59 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Bouffalo Lab DVP camera interface.
+
+  The controller writes captured frames straight to memory over AXI. The sensor
+  reference clock (MCLK) is driven by one of the chip clock outputs, which is
+  selected through the pinctrl state of this node.
+
+compatible: "bflb,dvp"
+
+include: [base.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  pinctrl-0:
+    required: true
+
+  pinctrl-names:
+    required: true
+
+  clocks:
+    required: true
+    description: |
+      The capture clock, named "core", and the reference clock driven out to the
+      sensor, named "ref".
+
+  clock-names:
+    required: true
+
+  mclk-frequency:
+    type: int
+    default: 24000000
+    description: |
+      Rate the reference clock is driven out to the sensor at. The clock
+      controller composes it from whichever of its sources can produce it.
+
+  source:
+    type: phandle
+    required: true
+    description: Image sensor feeding the parallel bus.
+
+  pclk-frequency:
+    type: int
+    default: 24000000
+    description: |
+      Pixel clock rate the sensor drives on PCLK. Used, together with the
+      capture clock rate, to size the amount of pixel data buffered ahead of
+      the AXI write burst.
+
+child-binding:
+  child-binding:
+    include: video-interfaces.yaml
