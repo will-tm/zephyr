@@ -199,7 +199,7 @@ static void video_shell_print_buffer(const struct shell *sh, struct video_buffer
 	uint32_t line_offset = vbuf->line_offset;
 	uint32_t byte_offset = line_offset * fmt->pitch;
 	uint32_t bytes_in_buf = vbuf->bytesused;
-	uint32_t lines_in_buf = vbuf->bytesused / fmt->pitch;
+	uint32_t lines_in_buf = (fmt->pitch == 0) ? 0 : vbuf->bytesused / fmt->pitch;
 
 	shell_print(sh, "Buffer %u/%u at %u ms, Bytes %u-%u/%u, Lines %u-%u/%u, Rate %u FPS %u ms",
 		    /* Buffer */ i + 1, num_buffer, vbuf->timestamp,
@@ -244,7 +244,7 @@ static int cmd_video_capture(const struct shell *sh, size_t argc, char **argv)
 		return -EINVAL;
 	}
 
-	buf_size = fmt.pitch * fmt.height;
+	buf_size = fmt.size;
 
 	shell_print(sh, "Preparing %u buffers of %u bytes each",
 		    CONFIG_VIDEO_BUFFER_POOL_NUM_MAX, buf_size);
