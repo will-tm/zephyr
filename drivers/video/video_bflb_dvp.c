@@ -53,6 +53,16 @@ LOG_MODULE_REGISTER(video_bflb_dvp, CONFIG_VIDEO_LOG_LEVEL);
  */
 #define DVP_RING_FRAMES 2
 
+/*
+ * A compressed stream has no frame length the controller could count, so it
+ * runs around the whole ring and reports every chunk of this many bytes, which
+ * the driver scans for the start and end of image markers.
+ */
+#define DVP_JPEG_CHUNK 32768U
+
+/* The shortest front end burst, which a compressed frame needs to start in time */
+#define DVP_JPEG_FIFO_TH 2U
+
 #ifdef CONFIG_VIDEO_BFLB_DVP_RING_ZEPHYR_REGION
 #define DVP_RING_SECTION Z_GENERIC_SECTION(CONFIG_VIDEO_BFLB_DVP_RING_ZEPHYR_REGION_NAME)
 #else
@@ -84,6 +94,9 @@ struct video_bflb_dvp_data {
 	struct k_fifo fifo_in;
 	struct k_fifo fifo_out;
 	struct k_sem frame_ready;
+	size_t rd;
+	size_t soi;
+	bool last_ff;
 	struct k_thread thread;
 #ifdef CONFIG_POLL
 	struct k_poll_signal *signal_out;
@@ -105,6 +118,11 @@ static void video_bflb_dvp_raise_signal(struct video_bflb_dvp_data *data, int re
 /* The controller stores whole bytes, so only byte sized pixels can pass through */
 static int video_bflb_dvp_data_mode(uint32_t pixelformat)
 {
+	/* A compressed stream is stored as it arrives on the bus */
+	if (pixelformat == VIDEO_PIX_FMT_JPEG) {
+		return DVP_DATA_MODE_1_OR_2_BYTE;
+	}
+
 	switch (video_bits_per_pixel(pixelformat)) {
 	case 8:
 	case 16:
@@ -143,8 +161,14 @@ static void video_bflb_dvp_configure(const struct device *dev)
 	struct video_bflb_dvp_data *data = dev->data;
 	uint32_t width = data->fmt.width;
 	uint32_t height = data->fmt.height;
+	uint32_t threshold;
 	uint32_t regval;
 
+	if (data->fmt.pitch == 0) {
+		/* A compressed frame has no geometry on the bus, so nothing is cropped */
+		width = 0xffff;
+		height = 0xffff;
+	}
 	/* No cropping: the active window is the whole frame */
 	sys_write32(width, cfg->base + CAM_DVP2AXI_HSYNC_CROP_OFFSET);
 	sys_write32(height, cfg->base + CAM_DVP2AXI_VSYNC_CROP_OFFSET);
@@ -163,8 +187,13 @@ static void video_bflb_dvp_configure(const struct device *dev)
 		    CAM_REG_FRAM_VLD_POL | CAM_REG_LINE_VLD_POL);
 	/* Software mode: the frame addresses are pushed on the frame FIFO */
 	regval |= CAM_REG_SW_MODE;
-	/* Restart each frame at the buffer start, so the image is not rolled */
-	regval |= CAM_REG_HW_MODE_FWRAP;
+	if (data->fmt.pitch != 0) {
+		/* Restart each frame at the buffer start, so the image is not rolled */
+		regval |= CAM_REG_HW_MODE_FWRAP;
+	} else {
+		/* A compressed stream is a run of chunks going around the whole ring */
+		regval &= ~CAM_REG_HW_MODE_FWRAP;
+	}
 	regval |= data->data_mode << CAM_REG_DVP_DATA_MODE_SHIFT;
 	regval |= DVP_BURST_INCR16 << CAM_REG_XLEN_SHIFT;
 	if (cfg->vsync_active != 0) {
@@ -185,7 +214,10 @@ static void video_bflb_dvp_configure(const struct device *dev)
 
 	regval = sys_read32(MM_MISC_BASE + MM_MISC_CONFIG_OFFSET);
 	regval &= ~MM_MISC_RG_DVPAS_FIFO_TH_MSK;
-	regval |= video_bflb_dvp_fifo_threshold(dev, width) << MM_MISC_RG_DVPAS_FIFO_TH_POS;
+	/* A compressed frame has no line length to pace the front end against */
+	threshold = (data->fmt.pitch == 0) ? DVP_JPEG_FIFO_TH
+					   : video_bflb_dvp_fifo_threshold(dev, width);
+	regval |= threshold << MM_MISC_RG_DVPAS_FIFO_TH_POS;
 	regval |= MM_MISC_RG_DVPAS_ENABLE_MSK;
 	sys_write32(regval, MM_MISC_BASE + MM_MISC_CONFIG_OFFSET);
 
@@ -209,6 +241,91 @@ static void video_bflb_dvp_isr(const struct device *dev)
 	k_sem_give(&data->frame_ready);
 }
 
+/* Copy a frame out of the ring, which may wrap around its end */
+static void video_bflb_dvp_ring_copy(const struct device *dev, uint8_t *dst, size_t from,
+				     size_t len)
+{
+	const struct video_bflb_dvp_config *cfg = dev->config;
+	struct video_bflb_dvp_data *data = dev->data;
+	size_t first = MIN(len, data->ring_bytes - from);
+
+	memcpy(dst, cfg->ring + from, first);
+	memcpy(dst + first, cfg->ring, len - first);
+}
+
+/*
+ * The front end holds its pacing state across a compressed frame and will not
+ * take the next one until that state is cleared, so it is cycled every time a
+ * frame ends and again when the capture stops.
+ */
+static void video_bflb_dvp_rearm(void)
+{
+	uint32_t regval = sys_read32(MM_MISC_BASE + MM_MISC_CONFIG_OFFSET);
+
+	sys_write32(regval & ~MM_MISC_RG_DVPAS_ENABLE_MSK, MM_MISC_BASE + MM_MISC_CONFIG_OFFSET);
+	sys_write32(regval, MM_MISC_BASE + MM_MISC_CONFIG_OFFSET);
+}
+
+static void video_bflb_dvp_jpeg_done(const struct device *dev, size_t end)
+{
+	struct video_bflb_dvp_data *data = dev->data;
+	struct video_buffer *vbuf;
+	size_t len = (end + data->ring_bytes - data->soi) % data->ring_bytes;
+
+	vbuf = k_fifo_get(&data->fifo_in, K_NO_WAIT);
+	if (vbuf == NULL) {
+		video_bflb_dvp_raise_signal(data, VIDEO_BUF_ERROR);
+		return;
+	}
+
+	if (len > vbuf->size) {
+		k_fifo_put(&data->fifo_in, vbuf);
+		video_bflb_dvp_raise_signal(data, VIDEO_BUF_ERROR);
+		return;
+	}
+
+	video_bflb_dvp_ring_copy(dev, vbuf->buffer, data->soi, len);
+
+	vbuf->bytesused = len;
+	vbuf->line_offset = 0;
+	vbuf->timestamp = k_uptime_get_32();
+	k_fifo_put(&data->fifo_out, vbuf);
+	video_bflb_dvp_raise_signal(data, VIDEO_BUF_DONE);
+
+	video_bflb_dvp_rearm();
+}
+
+/* Scan the chunk the controller just wrote for the markers that bound each frame */
+static void video_bflb_dvp_jpeg_parse(const struct device *dev, size_t chunk)
+{
+	const struct video_bflb_dvp_config *cfg = dev->config;
+	struct video_bflb_dvp_data *data = dev->data;
+	size_t i;
+
+	/* A chunk was lost, so whatever frame was in progress is incomplete */
+	if (chunk != data->rd) {
+		data->soi = SIZE_MAX;
+		data->last_ff = false;
+		video_bflb_dvp_raise_signal(data, VIDEO_BUF_ERROR);
+	}
+
+	sys_cache_data_invd_range(cfg->ring + chunk, DVP_JPEG_CHUNK);
+
+	for (i = chunk; i < chunk + DVP_JPEG_CHUNK; i++) {
+		uint8_t byte = cfg->ring[i];
+
+		if (data->last_ff && byte == 0xd8U) {
+			data->soi = (i + data->ring_bytes - 1) % data->ring_bytes;
+		} else if (data->last_ff && byte == 0xd9U && data->soi != SIZE_MAX) {
+			video_bflb_dvp_jpeg_done(dev, (i + 1) % data->ring_bytes);
+			data->soi = SIZE_MAX;
+		}
+		data->last_ff = (byte == 0xffU);
+	}
+
+	data->rd = (chunk + DVP_JPEG_CHUNK) % data->ring_bytes;
+}
+
 static void video_bflb_dvp_thread(void *p1, void *p2, void *p3)
 {
 	const struct device *dev = p1;
@@ -227,6 +344,13 @@ static void video_bflb_dvp_thread(void *p1, void *p2, void *p3)
 			CAM_FRAME_VALID_CNT_MASK) != 0) {
 			/* The frame FIFO says which ring frame was completed */
 			frame = (uint8_t *)sys_read32(cfg->base + CAM_FRAME_START_ADDR0_OFFSET);
+
+			if (data->fmt.pitch == 0) {
+				video_bflb_dvp_jpeg_parse(dev, frame - cfg->ring);
+				sys_write32(CAM_RFIFO_POP,
+					    cfg->base + CAM_DVP_FRAME_FIFO_POP_OFFSET);
+				continue;
+			}
 
 			vbuf = k_fifo_get(&data->fifo_in, K_NO_WAIT);
 			if (vbuf == NULL) {
@@ -260,18 +384,33 @@ static int video_bflb_dvp_set_stream(const struct device *dev, bool enable,
 			return 0;
 		}
 
+		/* Let the pipeline drain before the controller is disabled under it */
+		ret = video_stream_stop(cfg->source_dev, type);
+		for (int i = 0; i < 100; i++) {
+			if (sys_read32(cfg->base + CAM_DVP_STATUS_AND_ERROR_OFFSET) &
+			    CAM_ST_DVP_IDLE) {
+				break;
+			}
+			k_sleep(K_MSEC(1));
+		}
+
 		regval = sys_read32(cfg->base + CAM_DVP2AXI_CONFIGUE_OFFSET);
 		regval &= ~CAM_REG_DVP_ENABLE;
 		sys_write32(regval, cfg->base + CAM_DVP2AXI_CONFIGUE_OFFSET);
 		data->streaming = false;
 
-		return video_stream_stop(cfg->source_dev, type);
+		video_bflb_dvp_rearm();
+
+		return ret;
 	}
 
 	if (data->streaming) {
 		return -EBUSY;
 	}
 
+	data->rd = 0;
+	data->soi = SIZE_MAX;
+	data->last_ff = false;
 	video_bflb_dvp_configure(dev);
 	sys_write32(CAM_REG_INT_NORMAL_CLR | CAM_RFIFO_POP,
 		    cfg->base + CAM_DVP_FRAME_FIFO_POP_OFFSET);
@@ -300,6 +439,10 @@ static int video_bflb_dvp_get_fmt(const struct device *dev, struct video_format 
 		return ret;
 	}
 
+	if (fmt->pixelformat == VIDEO_PIX_FMT_JPEG) {
+		return 0;
+	}
+
 	return video_estimate_fmt_size(fmt);
 }
 
@@ -319,9 +462,12 @@ static int video_bflb_dvp_set_fmt(const struct device *dev, struct video_format 
 		return ret;
 	}
 
-	ret = video_estimate_fmt_size(fmt);
-	if (ret < 0) {
-		return ret;
+	/* A compressed frame has no fixed length, only the source knows its worst case */
+	if (fmt->pixelformat != VIDEO_PIX_FMT_JPEG) {
+		ret = video_estimate_fmt_size(fmt);
+		if (ret < 0) {
+			return ret;
+		}
 	}
 
 	ret = video_bflb_dvp_data_mode(fmt->pixelformat);
@@ -331,6 +477,13 @@ static int video_bflb_dvp_set_fmt(const struct device *dev, struct video_format 
 		return ret;
 	}
 	data->data_mode = (uint8_t)ret;
+
+	if (fmt->pitch == 0) {
+		data->fmt = *fmt;
+		data->frame_size = DVP_JPEG_CHUNK;
+		data->ring_bytes = ROUND_DOWN(cfg->ring_size, DVP_JPEG_CHUNK);
+		return 0;
+	}
 
 	frame_size = fmt->pitch * fmt->height;
 	if ((frame_size % DVP_BURST_BYTES) != 0) {
