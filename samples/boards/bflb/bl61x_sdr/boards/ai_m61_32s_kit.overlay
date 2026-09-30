@@ -1,0 +1,41 @@
+/*
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* The ESP-SDR web viewer opens the port at 2 MBaud */
+&uart0 {
+	current-speed = <2000000>;
+};
+
+/*
+ * RF dump window: all 160 KiB of WRAM, the continuous ring uses the first
+ * 128 KiB. The dump engine addresses it as its WRAM bank (0x21010000); the
+ * CPU reaches it through the bus remap views at 0x23010000 (non-cached) and
+ * 0x63010000 (cached); the 0x21xxxxxx view is not CPU accessible. The
+ * wifi_ram region covers the same memory.
+ */
+&wifi_ram {
+	status = "disabled";
+};
+
+/ {
+	soc {
+		iq_ring: memory@23010000 {
+			compatible = "zephyr,memory-region", "mmio-sram";
+			reg = <0x23010000 DT_SIZE_K(160)>;
+			zephyr,memory-region = "IQ_RING";
+		};
+	};
+};
+
+/* Burst protocol over USB CDC-ACM (Web Serial), next to the vendor stream */
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+		tx-fifo-size = <32768>;
+		tx-buf-size = <8192>;
+		rx-fifo-size = <1024>;
+	};
+};

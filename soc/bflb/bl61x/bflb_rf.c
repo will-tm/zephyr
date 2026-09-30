@@ -333,9 +333,10 @@ int bflb_rf_init(void)
 		return -ENOMEM;
 	}
 
-	if (IS_ENABLED(CONFIG_WIFI_BFLB) && IS_ENABLED(CONFIG_BT)) {
+	if ((IS_ENABLED(CONFIG_WIFI_BFLB) || IS_ENABLED(CONFIG_BFLB_BL61X_SDR)) &&
+	    IS_ENABLED(CONFIG_BT)) {
 		cfg->mode = WL_API_MODE_ALL;
-	} else if (IS_ENABLED(CONFIG_WIFI_BFLB)) {
+	} else if (IS_ENABLED(CONFIG_WIFI_BFLB) || IS_ENABLED(CONFIG_BFLB_BL61X_SDR)) {
 		cfg->mode = WL_API_MODE_WLAN;
 	} else {
 		cfg->mode = WL_API_MODE_BZ;

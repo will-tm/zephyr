@@ -1,0 +1,13 @@
+sample:
+  name: BL61x WLAN RF I/Q capture
+  description: Raw WLAN receiver I/Q capture speaking the ESP-SDR protocol
+tests:
+  sample.boards.bflb.bl61x_sdr:
+    build_only: true
+    platform_allow:
+      - bl618g0
+      - ai_m61_32s_kit
+    integration_platforms:
+      - bl618g0
+    tags:
+      - bflb
