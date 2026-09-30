@@ -35,6 +35,8 @@ LOG_MODULE_REGISTER(udc_bflb_udc_2, CONFIG_UDC_DRIVER_LOG_LEVEL);
 #define USB_BFLB_V2_NUM_MONODIR_EPS 3
 /* Number of data FIFOs (F0-F3) */
 #define USB_BFLB_V2_NUM_DATA_FIFOS  4U
+/* Largest VDMA transfer (17-bit length field) */
+#define USB_BFLB_V2_VDMA_MAX_LEN    0x1FFFFU
 
 #define USB_BFLB_V2_SPEED_LOW  1U
 #define USB_BFLB_V2_SPEED_FULL 0U
@@ -691,6 +693,18 @@ static void udc_bflb_v2_ep_dout_start(const struct device *const dev,
 	}
 }
 
+/*
+ * Data IN transfers are programmed as one VDMA of whole packets (the
+ * controller packetizes, as in the vendor driver); EP0 stays per packet.
+ */
+static uint32_t udc_bflb_v2_in_chunk_len(struct udc_ep_config *const ep_cfg,
+					 const struct net_buf *const buf)
+{
+	const uint32_t mps = udc_mps_ep_size(ep_cfg);
+
+	return MIN(buf->len, (USB_BFLB_V2_VDMA_MAX_LEN / mps) * mps);
+}
+
 static void udc_bflb_v2_ep_din_start(const struct device *const dev,
 				     struct udc_ep_config *const ep_cfg)
 {
@@ -712,7 +726,7 @@ static void udc_bflb_v2_ep_din_start(const struct device *const dev,
 		udc_submit_event(dev, UDC_EVT_ERROR, -ENOBUFS);
 	} else {
 		fifo = udc_bflb_v2_ep_to_fifo(ep_cfg);
-		chunk = MIN(buf->len, udc_mps_ep_size(ep_cfg));
+		chunk = udc_bflb_v2_in_chunk_len(ep_cfg, buf);
 
 		sys_write32(USB_BFLB_V2_G1_IN_INT(fifo),
 			    cfg->base + USB_DEV_ISG1_OFFSET);
@@ -765,9 +779,9 @@ static void udc_bflb_v2_out_chunk_done(const struct device *dev,
 }
 
 /*
- * IN chunk completion: VDMA transferred up to one MPS from memory to FIFO
- * and host has confirmed reading it (G1 IN_INT).
- * Continue sending if the buffer has more data.
+ * IN chunk completion: VDMA transferred the chunk (whole packets, or the
+ * tail) from memory to the FIFO. Continue sending if the buffer has more
+ * data.
  */
 static void udc_bflb_v2_in_chunk_done(const struct device *dev,
 				      struct udc_ep_config *ep_cfg)
@@ -784,7 +798,7 @@ static void udc_bflb_v2_in_chunk_done(const struct device *dev,
 	}
 
 	remain = udc_bflb_v2_ep_remain(dev, fifo);
-	chunk = MIN(buf->len, udc_mps_ep_size(ep_cfg));
+	chunk = udc_bflb_v2_in_chunk_len(ep_cfg, buf);
 	sent = chunk - remain;
 
 	net_buf_pull(buf, sent);
@@ -796,7 +810,7 @@ static void udc_bflb_v2_in_chunk_done(const struct device *dev,
 	}
 
 	/* Buffer fully sent — complete the transfer */
-	if (sent == udc_mps_ep_size(ep_cfg) && udc_ep_buf_has_zlp(buf)) {
+	if ((sent != 0U) && ((sent % udc_mps_ep_size(ep_cfg)) == 0U) && udc_ep_buf_has_zlp(buf)) {
 		udc_bflb_v2_ep_ack(dev, USB_EP_GET_IDX(ep_cfg->addr));
 		udc_ep_buf_clear_zlp(buf);
 	}

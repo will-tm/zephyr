@@ -54,6 +54,8 @@ struct cdc_acm_rx_uart_fifo {
 
 struct cdc_acm_tx_uart_fifo {
 	struct net_buf_pool *pool;
+	/* Size of the pool buffers, each one is a single IN transfer */
+	size_t buf_size;
 	struct net_buf *current;
 	uint32_t enqueued;
 	bool irq;
@@ -274,7 +276,7 @@ static uint32_t cdc_acm_tx_fifo_space_get(struct cdc_acm_uart_data *const data)
 		/* Use available - 1 to prevent sudden drop of available
 		 * size when a partially filled buffer is enqueued.
 		 */
-		space = USBD_MAX_BULK_MPS * (available - 1);
+		space = data->tx_fifo.buf_size * (available - 1);
 	}
 
 	k_spin_unlock(&data->lock, key);
@@ -1485,8 +1487,11 @@ const static struct usb_desc_header *const cdc_acm_hs_desc_##n[] = {		\
 #define CDC_ACM_RX_BUF_COUNT(n)							\
 	DIV_ROUND_UP(DT_INST_PROP(n, rx_fifo_size), USBD_MAX_BULK_MPS)
 
+#define CDC_ACM_TX_BUF_SIZE(n)							\
+	DT_INST_PROP_OR(n, tx_buf_size, USBD_MAX_BULK_MPS)
+
 #define CDC_ACM_TX_BUF_COUNT(n)							\
-	DIV_ROUND_UP(DT_INST_PROP(n, tx_fifo_size), USBD_MAX_BULK_MPS)
+	DIV_ROUND_UP(DT_INST_PROP(n, tx_fifo_size), CDC_ACM_TX_BUF_SIZE(n))
 
 #define USBD_CDC_ACM_DT_DEVICE_DEFINE(n)					\
 	BUILD_ASSERT(DT_INST_ON_BUS(n, usb),					\
@@ -1508,10 +1513,12 @@ const static struct usb_desc_header *const cdc_acm_hs_desc_##n[] = {		\
 				USBD_DUT_STRING_INTERFACE);			\
 	))									\
 										\
+	BUILD_ASSERT((CDC_ACM_TX_BUF_SIZE(n) % USBD_MAX_BULK_MPS) == 0,		\
+		     "tx-buf-size must be a multiple of the bulk endpoint MPS");\
 	BUILD_ASSERT(CDC_ACM_TX_BUF_COUNT(n) >= 2,				\
-		     "tx-fifo-size must be greater than the bulk endpoint MPS");\
+		     "tx-fifo-size must be at least twice the TX buffer size");	\
 	UDC_BUF_POOL_DEFINE(cdc_acm_tx_pool_##n,				\
-			    CDC_ACM_TX_BUF_COUNT(n), USBD_MAX_BULK_MPS,		\
+			    CDC_ACM_TX_BUF_COUNT(n), CDC_ACM_TX_BUF_SIZE(n),	\
 			    sizeof(struct udc_buf_info), NULL);			\
 	UDC_BUF_POOL_DEFINE(cdc_acm_rx_pool_##n,				\
 			    CDC_ACM_RX_BUF_COUNT(n), USBD_MAX_BULK_MPS,		\
@@ -1536,6 +1543,7 @@ const static struct usb_desc_header *const cdc_acm_hs_desc_##n[] = {		\
 		.rx_fifo.bufs = &cdc_acm_uart_rx_fifo##n,			\
 		.rx_fifo.pool = &cdc_acm_rx_pool_##n,				\
 		.tx_fifo.pool = &cdc_acm_tx_pool_##n,				\
+		.tx_fifo.buf_size = CDC_ACM_TX_BUF_SIZE(n),			\
 		.flow_ctrl = DT_INST_PROP(n, hw_flow_control),			\
 		.notif_sem = Z_SEM_INITIALIZER(uart_data_##n.notif_sem, 0, 1),	\
 	};									\

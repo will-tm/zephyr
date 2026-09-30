@@ -16,6 +16,14 @@ properties:
     description: |
       Size of the virtual CDC ACM UART TX FIFO
 
+  tx-buf-size:
+    type: int
+    description: |
+      Size of each TX FIFO buffer, a multiple of the bulk endpoint MPS.
+      Each buffer is sent as one IN transfer, so buffers larger than the
+      MPS reduce the per-transfer overhead. Defaults to the bulk endpoint
+      MPS (512 bytes when high-speed is supported, 64 bytes otherwise).
+
   rx-fifo-size:
     type: int
     default: 1024
