@@ -16,4 +16,22 @@ configdefault UART_CONSOLE
 configdefault MEMC
 	default y
 
+if VIDEO
+
+# A single VGA frame does not fit in SRAM, so the pool lives in the PSRAM
+config VIDEO_BUFFER_POOL_ZEPHYR_REGION
+	default y
+
+config VIDEO_BUFFER_POOL_ZEPHYR_REGION_NAME
+	default "PSRAM"
+
+# The DVP capture ring does not fit in SRAM either
+config VIDEO_BFLB_DVP2AXI_RING_ZEPHYR_REGION
+	default y
+
+config VIDEO_BFLB_DVP2AXI_RING_ZEPHYR_REGION_NAME
+	default "PSRAM"
+
+endif # VIDEO
+
 endif

@@ -114,6 +114,19 @@ pins with the display data line.
 Some pins of the J7 header are shared with the DVP camera connector and cannot
 be used at the same time.
 
+Camera
+======
+
+The 24 pin DVP connector is driven by the SoC camera interface and takes modules
+built around an OV2640 sensor. The sensor reference clock is the third
+chip clock output on GPIO23, running at 24 MHz, and the sensor is configured over
+I2C0.
+
+A single VGA frame does not fit in SRAM, so the video buffer pool is placed in
+the PSRAM. The capture interface writes frames over AXI and needs buffers aligned
+to 16 bytes, which :kconfig:option:`CONFIG_VIDEO_BUFFER_POOL_ALIGN` already
+satisfies at its default value.
+
 Programming and Debugging
 *************************
 

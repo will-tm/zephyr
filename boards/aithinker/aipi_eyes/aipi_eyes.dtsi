@@ -4,10 +4,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zephyr/dt-bindings/video/video-interfaces.h>
+
 #include "ai_m61_32s.dtsi"
 #include "aipi_eyes-pinctrl.dtsi"
 
 / {
+	chosen {
+		zephyr,camera = &dvp2axi0;
+	};
+
 	aliases {
 		sw0 = &button_0;
 	};
@@ -29,6 +35,46 @@
 
 	pinctrl-0 = <&i2c0_default>;
 	pinctrl-names = "default";
+
+	ov2640: ov2640@30 {
+		compatible = "ovti,ov2640";
+		reg = <0x30>;
+		status = "okay";
+		clock-rate-control = <0x00>;
+
+		reset-gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
+
+		port {
+			ov2640_ep_out: endpoint {
+				remote-endpoint-label = "camfront_ep_in";
+				bus-type = <VIDEO_BUS_TYPE_PARALLEL>;
+			};
+		};
+	};
+};
+
+&camfront {
+	status = "okay";
+
+	pinctrl-0 = <&camfront_default>;
+	pinctrl-1 = <&camfront_compressed>;
+	pinctrl-names = "default", "compressed";
+
+	source = <&ov2640>;
+
+	port {
+		camfront_ep_in: endpoint@0 {
+			reg = <0>;
+			remote-endpoint-label = "ov2640_ep_out";
+			bus-type = <VIDEO_BUS_TYPE_PARALLEL>;
+			hsync-active = <1>;
+			vsync-active = <1>;
+		};
+	};
+};
+
+&dvp2axi0 {
+	status = "okay";
 };
 
 &spi0 {
