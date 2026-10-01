@@ -113,6 +113,10 @@ LOG_MODULE_REGISTER(video_ov2640, CONFIG_VIDEO_LOG_LEVEL);
 #define REG04_VREF_EN   0x10
 #define REG04_HREF_EN   0x08
 #define REG04_SET(x)    (REG04_DEFAULT | x)
+#define REG04_AEC_MASK  0x03
+
+#define REG45          0x45
+#define REG45_AEC_MASK 0x3f
 
 #define COM2              0x09
 #define COM2_OUT_DRIVE_3x 0x02
@@ -124,6 +128,7 @@ LOG_MODULE_REGISTER(video_ov2640, CONFIG_VIDEO_LOG_LEVEL);
 
 #define COM7           0x12
 #define COM7_SRST      0x80
+#define COM7_RES_MASK  0x70
 #define COM7_RES_UXGA  0x00 /* UXGA */
 #define COM7_ZOOM_EN   0x04 /* Enable Zoom */
 #define COM7_COLOR_BAR 0x02 /* Enable Color Bar Test */
@@ -666,6 +671,38 @@ static int ov2640_set_vertical_flip(const struct device *dev, int enable)
 	return ret;
 }
 
+/* Longest exposure of a UXGA frame, a few rows short of its 1248 */
+#define OV2640_UXGA_ROWS 1240
+
+/*
+ * Carry the exposure over to the new sensor mode, which auto exposure takes several frames to
+ * find again. The SVGA and CIF modes sum two rows, so they need half the exposure of UXGA.
+ */
+static int ov2640_keep_exposure(const struct device *dev, int com7, int reg04, int aec, int reg45,
+				bool binned)
+{
+	const struct ov2640_config *cfg = dev->config;
+	bool was_binned = (com7 & COM7_RES_MASK) != COM7_RES_UXGA;
+	uint32_t exposure;
+	int ret = 0;
+
+	if (com7 < 0 || reg04 < 0 || aec < 0 || reg45 < 0 || was_binned == binned) {
+		return 0;
+	}
+
+	exposure = ((reg45 & REG45_AEC_MASK) << 10) | (aec << 2) | (reg04 & REG04_AEC_MASK);
+	exposure = binned ? exposure / 2 : MIN(exposure * 2, OV2640_UXGA_ROWS);
+
+	ret |= ov2640_write_reg(&cfg->i2c, BANK_SEL, BANK_SEL_SENSOR);
+	ret |= ov2640_write_reg(&cfg->i2c, REG45,
+				(reg45 & ~REG45_AEC_MASK) | ((exposure >> 10) & REG45_AEC_MASK));
+	ret |= ov2640_write_reg(&cfg->i2c, AEC, (exposure >> 2) & 0xff);
+	ret |= ov2640_write_reg(&cfg->i2c, REG04,
+				(reg04 & ~REG04_AEC_MASK) | (exposure & REG04_AEC_MASK));
+
+	return ret;
+}
+
 /*
  * Pick the sensor mode covering the output size, crop the sensor array to the
  * aspect ratio of the output, and let the DSP scale that window down to it.
@@ -683,6 +720,7 @@ static int ov2640_set_resolution(const struct device *dev, uint16_t img_width,
 	uint16_t w = img_width / 4;
 	uint16_t h = img_height / 4;
 	uint8_t pclk_div = 8;
+	int com7, reg04, aec, reg45;
 	int ret = 0;
 
 	if (img_width == img_height) {
@@ -718,9 +756,17 @@ static int ov2640_set_resolution(const struct device *dev, uint16_t img_width,
 	max_x /= 4;
 	max_y /= 4;
 
+	ret |= ov2640_write_reg(&cfg->i2c, BANK_SEL, BANK_SEL_SENSOR);
+	com7 = ov2640_read_reg(&cfg->i2c, COM7);
+	reg04 = ov2640_read_reg(&cfg->i2c, REG04);
+	aec = ov2640_read_reg(&cfg->i2c, AEC);
+	reg45 = ov2640_read_reg(&cfg->i2c, REG45);
+
 	ret |= ov2640_write_reg(&cfg->i2c, BANK_SEL, BANK_SEL_DSP);
 	ret |= ov2640_write_reg(&cfg->i2c, R_BYPASS, R_BYPASS_DSP_BYPAS);
 	ret |= ov2640_write_all(dev, mode_regs, mode_size);
+	ret |= ov2640_keep_exposure(dev, com7, reg04, aec, reg45,
+				    mode_regs != ov2640_uxga_mode_regs);
 
 	ret |= ov2640_write_reg(&cfg->i2c, BANK_SEL, BANK_SEL_DSP);
 	ret |= ov2640_write_reg(&cfg->i2c, HSIZE, max_x & 0xff);
