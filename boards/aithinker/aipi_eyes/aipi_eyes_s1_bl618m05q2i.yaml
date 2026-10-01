@@ -22,4 +22,5 @@ supported:
   - i2c
   - spi
   - flash
+  - netif:wifi
 vendor: bflb
