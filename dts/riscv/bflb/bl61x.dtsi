@@ -510,6 +510,16 @@
 			};
 		};
 
+		usbd: usbd@20072000 {
+			compatible = "bflb,udc-2";
+			reg = <0x20072000 0x1000>;
+			maximum-speed = "high-speed";
+			status = "disabled";
+
+			interrupts = <37 8>;
+			interrupt-parent = <&clic>;
+		};
+
 		sdhc0: sdhc@20060000 {
 			compatible = "bflb,sdhc";
 			reg = <0x20060000 0x200>;
