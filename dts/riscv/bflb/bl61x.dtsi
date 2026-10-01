@@ -510,6 +510,15 @@
 			};
 		};
 
+		mjpeg: mjpeg@20059000 {
+			compatible = "bflb,mjpeg";
+			reg = <0x20059000 0x1000>;
+			status = "disabled";
+
+			interrupts = <39 1>;
+			interrupt-parent = <&clic>;
+		};
+
 		usbd: usbd@20072000 {
 			compatible = "bflb,udc-2";
 			reg = <0x20072000 0x1000>;
