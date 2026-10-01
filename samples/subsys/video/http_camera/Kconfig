@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "HTTP camera"
+
+config APP_WIFI_SSID
+	string "WiFi network name"
+
+config APP_WIFI_PSK
+	string "WiFi passphrase"
+
+source "Kconfig.zephyr"

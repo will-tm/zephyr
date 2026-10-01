@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AiPi-Eyes-S1 camera</title>
+<style>
+  :root {
+    --bg:#0d1117; --bg2:#161b22; --bg3:#1c222b; --border:#30363d;
+    --fg:#c9d1d9; --muted:#8b949e; --subtle:#6e7681;
+    --green:#7ee787; --blue:#79c0ff; --yellow:#d29922; --red:#f85149;
+    --purple:#d2a8ff; --cyan:#56d4dd; --orange:#ffa657;
+  }
+  * { box-sizing:border-box; }
+  body { background:var(--bg); color:var(--fg); font:12px/1.4 ui-monospace,Menlo,Consolas,monospace; margin:0; }
+  header { display:flex; gap:1em; align-items:center; padding:8px 14px; background:var(--bg2);
+           border-bottom:1px solid var(--border); position:sticky; top:0; z-index:10; }
+  header h1 { font-size:13px; margin:0; font-weight:600; }
+  header h1 .sub { font-weight:400; color:var(--subtle); font-size:11px; margin-left:.5em; }
+  header .spacer { flex:1; }
+  #status { font-size:11px; color:var(--muted); }
+  #status.live { color:var(--green); }
+  #status.err { color:var(--red); }
+  #tick { font-size:11px; color:var(--subtle); }
+
+  main { padding:10px; display:grid; gap:10px; }
+  .row { display:grid; gap:10px; }
+  .row.cols-3 { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+  .row.cols-6 { grid-template-columns:repeat(6, minmax(0, 1fr)); }
+  .row.split { grid-template-columns:minmax(0, 3fr) minmax(0, 2fr); }
+  @media (max-width:900px) {
+    .row.cols-3, .row.split { grid-template-columns:minmax(0, 1fr); }
+    .row.cols-6 { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+  }
+
+  .card { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:10px 12px;
+          display:flex; flex-direction:column; min-width:0; }
+  .card h2 { font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--muted);
+             margin:0 0 8px 0; display:flex; align-items:center; gap:.5em; }
+  .card h2 .sub { color:var(--subtle); font-weight:400; text-transform:none; letter-spacing:0; }
+
+  .stat { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:10px 12px; }
+  .stat .k { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  .stat .v { font-size:18px; font-weight:600; margin-top:4px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .stat .v.ok { color:var(--green); }
+  .stat .v.warn { color:var(--yellow); }
+  .stat .v.bad { color:var(--red); }
+  .stat .unit { font-size:11px; color:var(--subtle); margin-left:.3em; font-weight:400; }
+
+  #view { width:100%; aspect-ratio:4/3; background:#000; border:1px solid var(--border); border-radius:4px;
+          display:block; object-fit:contain; }
+
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:11px; margin-top:8px; }
+  .bar button { font:inherit; font-size:11px; height:24px; padding:0 12px; color:var(--blue); background:var(--bg3);
+                border:1px solid var(--blue); border-radius:4px; cursor:pointer; }
+  .bar button:hover:not(:disabled) { background:var(--border); }
+  .bar button:disabled { color:var(--subtle); border-color:var(--border); cursor:default; }
+  .bar .mute { color:var(--muted); }
+
+  .chart { margin-bottom:10px; }
+  .chart:last-child { margin-bottom:0; }
+  .legend { display:flex; gap:12px; flex-wrap:wrap; font-size:10px; color:var(--muted); margin-bottom:4px; }
+  .legend .t { color:var(--fg); text-transform:uppercase; letter-spacing:.04em; }
+  .legend .s { display:inline-flex; align-items:center; gap:4px; font-variant-numeric:tabular-nums; }
+  .legend .sw { width:10px; height:2px; display:inline-block; }
+  canvas.spark { width:100%; height:72px; display:block; background:var(--bg3); border:1px solid var(--border);
+                 border-radius:3px; }
+
+  .kv-grid { display:grid; grid-template-columns:1fr 1fr; gap:4px 14px; font-size:11px; }
+  .kv-grid .k { color:var(--muted); }
+  .kv-grid .v { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .kv-grid .v.zero { color:var(--subtle); }
+  .kv-grid .v.bad { color:var(--red); }
+
+  .photo-body { display:flex; gap:12px; align-items:flex-start; }
+  .photo-body .kv-grid { flex:1; min-width:0; }
+  #photo-link { flex:0 0 auto; display:block; }
+  #photo { width:160px; height:120px; object-fit:cover; background:var(--bg3); border:1px solid var(--border);
+           border-radius:4px; display:block; }
+  #photo:not([src]) { visibility:hidden; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AiPi-Eyes-S1 camera<span class="sub" id="hdr-sub">OV2640 &middot; MJPEG over HTTP</span></h1>
+  <span class="spacer"></span>
+  <span id="tick">&mdash;</span>
+  <span id="status">connecting&hellip;</span>
+</header>
+
+<main>
+  <section class="row cols-6">
+    <div class="stat"><div class="k">Resolution</div><div class="v" id="s-res">&mdash;</div></div>
+    <div class="stat"><div class="k">JPEG QS</div><div class="v" id="s-qs">&mdash;</div></div>
+    <div class="stat"><div class="k">Sensor fps</div><div class="v" id="s-sfps">&mdash;</div></div>
+    <div class="stat"><div class="k">Received fps</div><div class="v" id="s-cfps">&mdash;</div></div>
+    <div class="stat"><div class="k">Bitrate</div><div class="v" id="s-kbps">&mdash;</div></div>
+    <div class="stat"><div class="k">Arrival jitter</div><div class="v" id="s-jit">&mdash;</div></div>
+  </section>
+
+  <section class="row split">
+    <div class="card">
+      <h2>Live <span class="sub">640x480 JPEG, multipart/x-mixed-replace</span></h2>
+      <img id="view" alt="">
+      <div class="bar">
+        <button id="shot">Take picture</button>
+        <span class="mute" id="shot-status">1600x1200, the stream pauses for about a second</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>History <span class="sub">last 2 minutes</span></h2>
+      <div class="chart">
+        <div class="legend"><span class="t">Frame rate</span>
+          <span class="s"><span class="sw" style="background:var(--green)"></span>sensor <b id="l-sfps">&mdash;</b></span>
+          <span class="s"><span class="sw" style="background:var(--blue)"></span>received <b id="l-cfps">&mdash;</b></span>
+        </div>
+        <canvas class="spark" id="c-fps"></canvas>
+      </div>
+      <div class="chart">
+        <div class="legend"><span class="t">Bitrate</span>
+          <span class="s"><span class="sw" style="background:var(--purple)"></span>received <b id="l-kbps">&mdash;</b></span>
+        </div>
+        <canvas class="spark" id="c-kbps"></canvas>
+      </div>
+      <div class="chart">
+        <div class="legend"><span class="t">Frame size</span>
+          <span class="s"><span class="sw" style="background:var(--cyan)"></span>avg <b id="l-favg">&mdash;</b></span>
+          <span class="s"><span class="sw" style="background:var(--orange)"></span>max <b id="l-fmax">&mdash;</b></span>
+        </div>
+        <canvas class="spark" id="c-size"></canvas>
+      </div>
+      <div class="chart">
+        <div class="legend"><span class="t">Jitter</span>
+          <span class="s"><span class="sw" style="background:var(--green)"></span>sensor <b id="l-sjit">&mdash;</b></span>
+          <span class="s"><span class="sw" style="background:var(--yellow)"></span>arrival <b id="l-cjit">&mdash;</b></span>
+        </div>
+        <canvas class="spark" id="c-jit"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <section class="row cols-3">
+    <div class="card">
+      <h2>Device</h2>
+      <div class="kv-grid">
+        <span class="k">Uptime</span><span class="v" id="d-uptime">&mdash;</span>
+        <span class="k">WiFi RSSI</span><span class="v" id="d-rssi">&mdash;</span>
+        <span class="k">PHY TX rate</span><span class="v" id="d-phy">&mdash;</span>
+        <span class="k">Channel</span><span class="v" id="d-ch">&mdash;</span>
+        <span class="k">Streams</span><span class="v" id="d-streams">&mdash;</span>
+        <span class="k">TX rate</span><span class="v" id="d-tx">&mdash;</span>
+        <span class="k">TX total</span><span class="v" id="d-sent">&mdash;</span>
+        <span class="k">Frames captured</span><span class="v" id="d-frames">&mdash;</span>
+        <span class="k">Frame interval</span><span class="v" id="d-int">&mdash;</span>
+        <span class="k">Frames dropped</span><span class="v" id="d-drop">&mdash;</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>This browser</h2>
+      <div class="kv-grid">
+        <span class="k">Frames received</span><span class="v" id="b-frames">&mdash;</span>
+        <span class="k">Frames shown</span><span class="v" id="b-shown">&mdash;</span>
+        <span class="k">Frames skipped</span><span class="v" id="b-skip">&mdash;</span>
+        <span class="k">Received total</span><span class="v" id="b-bytes">&mdash;</span>
+        <span class="k">Frame avg / max</span><span class="v" id="b-size">&mdash;</span>
+        <span class="k">Longest gap</span><span class="v" id="b-gap">&mdash;</span>
+        <span class="k">Reconnects</span><span class="v" id="b-reconn">&mdash;</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Last picture <span class="sub" id="p-sub"></span></h2>
+      <div class="photo-body">
+        <a id="photo-link" download="snapshot.jpg"><img id="photo" alt=""></a>
+        <div class="kv-grid">
+          <span class="k">Size</span><span class="v" id="p-size">&mdash;</span>
+          <span class="k">Request time</span><span class="v" id="p-time">&mdash;</span>
+          <span class="k">Stream paused</span><span class="v" id="p-pause">&mdash;</span>
+          <span class="k">Pictures taken</span><span class="v" id="p-count">&mdash;</span>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const HIST = 120;
+const hist = { sfps:[], cfps:[], kbps:[], favg:[], fmax:[], sjit:[], cjit:[] };
+
+function push(k, v) {
+  hist[k].push(v);
+  if (hist[k].length > HIST) hist[k].shift();
+}
+
+function bytes(n) {
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+function uptime(s) {
+  const d = Math.floor(s / 86400), h = Math.floor(s / 3600) % 24, m = Math.floor(s / 60) % 60;
+  return (d ? d + 'd ' : '') + String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' +
+         String(s % 60).padStart(2, '0');
+}
+
+function setv(id, html, cls) {
+  const e = $(id);
+  e.innerHTML = html;
+  if (cls !== undefined) e.className = 'v ' + cls;
+}
+
+function spark(id, series) {
+  const c = $(id), dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  let max = 0;
+  for (const s of series) for (const v of hist[s.k]) max = Math.max(max, v);
+  max = max > 0 ? max * 1.15 : 1;
+  g.strokeStyle = css('--border');
+  g.lineWidth = 1;
+  g.beginPath();
+  for (let i = 1; i < 4; i++) { const y = Math.round(h * i / 4) + 0.5; g.moveTo(0, y); g.lineTo(w, y); }
+  g.stroke();
+  g.fillStyle = css('--subtle');
+  g.font = '10px ui-monospace,Menlo,monospace';
+  g.fillText(series[0].fmt(max), 4, 11);
+  for (const s of series) {
+    const a = hist[s.k];
+    if (a.length < 2) continue;
+    g.strokeStyle = css(s.c);
+    g.lineWidth = 1.5;
+    g.beginPath();
+    a.forEach((v, i) => {
+      const x = w - (a.length - 1 - i) * w / (HIST - 1);
+      const y = h - 2 - v / max * (h - 16);
+      if (i) g.lineTo(x, y); else g.moveTo(x, y);
+    });
+    g.stroke();
+  }
+}
+
+/* Stream: read the multipart response, so every frame can be timed */
+const cl = { frames:0, shown:0, skipped:0, bytes:0, reconnects:-1, last:0, maxGap:0, fmax:0, total:0,
+             win:{ n:0, bytes:0, size:0, sum:0, sq:0 } };
+let busy = false, pending = null, shownUrl = null;
+const view = $('view');
+
+function show(blob) {
+  busy = true;
+  const url = URL.createObjectURL(blob);
+  view.onload = view.onerror = () => {
+    if (shownUrl) URL.revokeObjectURL(shownUrl);
+    shownUrl = url;
+    cl.shown++;
+    busy = false;
+    if (pending) { const b = pending; pending = null; show(b); }
+  };
+  view.src = url;
+}
+
+function onFrame(jpeg) {
+  const now = performance.now();
+  cl.frames++;
+  cl.win.size += jpeg.length;
+  cl.fmax = Math.max(cl.fmax, jpeg.length);
+  if (cl.last) {
+    const dt = now - cl.last;
+    cl.win.n++;
+    cl.win.sum += dt;
+    cl.win.sq += dt * dt;
+    cl.maxGap = Math.max(cl.maxGap, dt);
+  }
+  cl.last = now;
+  const blob = new Blob([jpeg], { type:'image/jpeg' });
+  if (busy) { if (pending) cl.skipped++; pending = blob; } else show(blob);
+}
+
+const enc = new TextEncoder(), dec = new TextDecoder();
+const CRLF2 = enc.encode('\r\n\r\n');
+
+function find(buf, pat, from) {
+  outer: for (let i = from; i <= buf.length - pat.length; i++) {
+    for (let j = 0; j < pat.length; j++) if (buf[i + j] !== pat[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+
+async function stream() {
+  for (;;) {
+    cl.reconnects++;
+    cl.last = 0;
+    try {
+      const r = await fetch('/stream', { cache:'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      const rd = r.body.getReader();
+      let buf = new Uint8Array(0);
+      for (;;) {
+        const { value, done } = await rd.read();
+        if (done) break;
+        cl.bytes += value.length;
+        cl.win.bytes += value.length;
+        const nb = new Uint8Array(buf.length + value.length);
+        nb.set(buf);
+        nb.set(value, buf.length);
+        buf = nb;
+        for (;;) {
+          const he = find(buf, CRLF2, 0);
+          if (he < 0) break;
+          const m = /Content-Length:\s*(\d+)/i.exec(dec.decode(buf.subarray(0, he)));
+          if (!m) { buf = buf.subarray(he + 4); continue; }
+          const len = +m[1], end = he + 4 + len;
+          if (buf.length < end + 2) break;
+          onFrame(buf.slice(he + 4, end));
+          buf = buf.subarray(end + 2);
+        }
+      }
+    } catch (e) { /* reconnect below */ }
+    await new Promise((res) => setTimeout(res, 1000));
+  }
+}
+
+/* Device statistics, once a second */
+let lastSent = null, lastTick = 0, dev = null;
+
+async function poll() {
+  const t = performance.now();
+  try {
+    const r = await fetch('/stats', { cache:'no-store' });
+    dev = await r.json();
+    if (lastSent !== null) {
+      const kbps = ((dev.sent - lastSent) >>> 0) * 8 / (t - lastTick);
+      setv('d-tx', kbps.toFixed(0) + ' kbps');
+    }
+    lastSent = dev.sent;
+    lastTick = t;
+  } catch (e) { dev = null; }
+}
+
+function tick() {
+  const w = cl.win, live = cl.last && performance.now() - cl.last < 2000;
+  const cfps = w.n, kbps = w.bytes * 8 / 1000;
+  const mean = w.n ? w.sum / w.n : 0;
+  const cjit = w.n ? Math.sqrt(Math.max(w.sq / w.n - mean * mean, 0)) : 0;
+  const favg = cl.frames ? w.size / Math.max(w.n, 1) : 0;
+
+  $('status').textContent = live ? 'live' : (cl.reconnects > 0 ? 'reconnecting' : 'connecting');
+  $('status').className = live ? 'live' : 'err';
+
+  setv('s-cfps', cfps.toFixed(0), cfps >= 25 ? 'ok' : cfps >= 15 ? 'warn' : 'bad');
+  setv('s-kbps', kbps.toFixed(0) + '<span class="unit">kbps</span>');
+  setv('s-jit', cjit.toFixed(1) + '<span class="unit">ms</span>', cjit < 10 ? 'ok' : cjit < 30 ? 'warn' : 'bad');
+  push('cfps', cfps);
+  push('kbps', kbps);
+  push('cjit', cjit);
+
+  if (dev) {
+    $('tick').textContent = 'up ' + uptime(dev.uptime);
+    setv('s-res', dev.width + 'x' + dev.height);
+    setv('s-qs', dev.qs + '<span class="unit">lower is finer</span>');
+    setv('s-sfps', dev.fps.toFixed(1), dev.fps >= 25 ? 'ok' : 'warn');
+    setv('d-uptime', uptime(dev.uptime));
+    setv('d-rssi', dev.rssi + ' dBm', dev.rssi > -67 ? '' : 'bad');
+    setv('d-phy', dev.phy.toFixed(1) + ' Mbps');
+    setv('d-ch', dev.channel);
+    setv('d-streams', dev.streams);
+    setv('d-sent', bytes(dev.sent >>> 0));
+    setv('d-frames', dev.frames);
+    setv('d-int', (dev.interval_us / 1000).toFixed(2) + ' ms');
+    setv('d-drop', dev.dropped, dev.dropped ? 'bad' : 'zero');
+    setv('p-count', dev.snapshots);
+    if (dev.snapshots) setv('p-pause', dev.snap_pause_ms + ' ms');
+    push('sfps', dev.fps);
+    push('favg', dev.frame_avg / 1024);
+    push('fmax', dev.frame_max / 1024);
+    push('sjit', dev.jitter_us / 1000);
+    $('l-sfps').textContent = dev.fps.toFixed(1);
+    $('l-favg').textContent = bytes(dev.frame_avg);
+    $('l-fmax').textContent = bytes(dev.frame_max);
+    $('l-sjit').textContent = (dev.jitter_us / 1000).toFixed(2) + ' ms';
+  } else {
+    $('tick').textContent = 'no stats';
+  }
+
+  $('l-cfps').textContent = cfps;
+  $('l-kbps').textContent = kbps.toFixed(0) + ' kbps';
+  $('l-cjit').textContent = cjit.toFixed(1) + ' ms';
+  setv('b-frames', cl.frames);
+  setv('b-shown', cl.shown);
+  setv('b-skip', cl.skipped, cl.skipped ? 'bad' : 'zero');
+  setv('b-bytes', bytes(cl.bytes));
+  setv('b-size', bytes(Math.round(favg)) + ' / ' + bytes(cl.fmax));
+  setv('b-gap', cl.maxGap.toFixed(0) + ' ms');
+  setv('b-reconn', Math.max(cl.reconnects, 0), cl.reconnects > 0 ? 'bad' : 'zero');
+
+  spark('c-fps', [{ k:'sfps', c:'--green', fmt:(v) => v.toFixed(0) + ' fps' }, { k:'cfps', c:'--blue' }]);
+  spark('c-kbps', [{ k:'kbps', c:'--purple', fmt:(v) => v.toFixed(0) + ' kbps' }]);
+  spark('c-size', [{ k:'favg', c:'--cyan', fmt:(v) => v.toFixed(0) + ' KB' }, { k:'fmax', c:'--orange' }]);
+  spark('c-jit', [{ k:'sjit', c:'--green', fmt:(v) => v.toFixed(0) + ' ms' }, { k:'cjit', c:'--yellow' }]);
+
+  cl.win = { n:0, bytes:0, size:0, sum:0, sq:0 };
+  poll();
+}
+
+$('shot').onclick = async () => {
+  const b = $('shot'), st = $('shot-status');
+  b.disabled = true;
+  st.textContent = 'taking picture…';
+  const t = performance.now();
+  try {
+    const r = await fetch('/snapshot.jpg', { cache:'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const blob = await r.blob();
+    const ms = performance.now() - t;
+    const url = URL.createObjectURL(blob);
+    const old = $('photo').src;
+    $('photo').src = url;
+    $('photo-link').href = url;
+    if (old) URL.revokeObjectURL(old);
+    $('p-sub').textContent = '1600x1200, click to save';
+    setv('p-size', bytes(blob.size));
+    setv('p-time', ms.toFixed(0) + ' ms');
+    st.textContent = 'done';
+  } catch (e) {
+    st.textContent = 'failed: ' + e.message;
+  }
+  b.disabled = false;
+};
+
+stream();
+poll();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
