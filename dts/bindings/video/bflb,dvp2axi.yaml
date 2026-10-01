@@ -1,0 +1,28 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Bouffalo Lab DVP camera capture interface.
+
+  The controller writes the frames it receives from the camera front end
+  straight to memory over AXI.
+
+compatible: "bflb,dvp2axi"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  source:
+    type: phandle
+    required: true
+    description: Camera front end feeding the capture interface.
+
+child-binding:
+  child-binding:
+    include: video-interfaces.yaml
