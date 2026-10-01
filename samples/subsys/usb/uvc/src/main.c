@@ -24,6 +24,10 @@ static const struct device *const videoenc_dev = DEVICE_DT_GET_OR_NULL(DT_CHOSEN
 /* Format capabilities of video_dev, used everywhere through the sample */
 static struct video_caps video_caps = {.type = VIDEO_BUF_TYPE_OUTPUT};
 static struct video_caps videoenc_out_caps = {.type = VIDEO_BUF_TYPE_OUTPUT};
+static struct video_caps videoenc_in_caps = {.type = VIDEO_BUF_TYPE_INPUT};
+
+/* Whether the format the host selected is produced by the encoder */
+static bool use_videoenc;
 
 #if DT_HAS_CHOSEN(zephyr_videoenc) && CONFIG_VIDEO_BUFFER_POOL_NUM_MAX < 2
 #error CONFIG_VIDEO_BUFFER_POOL_NUM_MAX must be >=2 in order to use a zephyr,videoenc
@@ -36,20 +40,36 @@ static bool app_has_videoenc(void)
 
 static const struct device *app_uvc_source_dev(void)
 {
-	if (app_has_videoenc()) {
+	if (use_videoenc) {
 		return videoenc_dev;
 	} else {
 		return video_dev;
 	}
 }
 
-static struct video_caps *app_uvc_source_caps(void)
+static bool app_caps_have_format(const struct video_caps *caps, uint32_t pixfmt)
 {
-	if (app_has_videoenc()) {
-		return &videoenc_out_caps;
-	} else {
-		return &video_caps;
+	for (int i = 0; caps->format_caps[i].pixelformat != 0; i++) {
+		if (caps->format_caps[i].pixelformat == pixfmt) {
+			return true;
+		}
 	}
+
+	return false;
+}
+
+/* Format the camera hands to the encoder: the first one of the camera the encoder takes */
+static uint32_t app_videoenc_input_format(void)
+{
+	for (int i = 0; video_caps.format_caps[i].pixelformat != 0; i++) {
+		uint32_t pixfmt = video_caps.format_caps[i].pixelformat;
+
+		if (app_caps_have_format(&videoenc_in_caps, pixfmt)) {
+			return pixfmt;
+		}
+	}
+
+	return 0;
 }
 
 /* Pixel formats present in one of the UVC 1.5 standard */
@@ -61,9 +81,8 @@ static bool app_is_supported_format(uint32_t pixfmt)
 	       pixfmt == VIDEO_PIX_FMT_H264;
 }
 
-static bool app_has_supported_format(void)
+static bool app_has_supported_format(const struct video_caps *const caps)
 {
-	const struct video_caps *const caps = app_uvc_source_caps();
 	const struct video_format_cap *const fmts = caps->format_caps;
 
 	for (int i = 0; fmts[i].pixelformat != 0; i++) {
@@ -75,9 +94,9 @@ static bool app_has_supported_format(void)
 	return false;
 }
 
-static int app_add_format(uint32_t pixfmt, uint32_t width, uint32_t height, bool has_sup_fmts)
+static int app_add_format(const struct device *uvc_src_dev, uint32_t pixfmt, uint32_t width,
+			  uint32_t height, bool has_sup_fmts)
 {
-	const struct device *uvc_src_dev = app_uvc_source_dev();
 	struct video_format fmt = {
 		.pixelformat = pixfmt,
 		.width = width,
@@ -95,7 +114,7 @@ static int app_add_format(uint32_t pixfmt, uint32_t width, uint32_t height, bool
 	ret = video_set_compose_format(uvc_src_dev, &fmt);
 	if (ret != 0) {
 		LOG_ERR("Could not set the format of %s to %s %ux%u (size %u)",
-			video_dev->name, VIDEO_FOURCC_TO_STR(fmt.pixelformat),
+			uvc_src_dev->name, VIDEO_FOURCC_TO_STR(fmt.pixelformat),
 			fmt.width, fmt.height, fmt.size);
 		return ret;
 	}
@@ -103,6 +122,24 @@ static int app_add_format(uint32_t pixfmt, uint32_t width, uint32_t height, bool
 	if (fmt.size > (CONFIG_VIDEO_BUFFER_POOL_HEAP_SIZE / CONFIG_VIDEO_BUFFER_POOL_NUM_MAX)) {
 		LOG_WRN("Skipping format %ux%u", fmt.width, fmt.height);
 		return 0;
+	}
+
+	/* An encoded stream also needs the camera frames it is made of to fit */
+	if (uvc_src_dev == videoenc_dev) {
+		struct video_format in_fmt = {
+			.pixelformat = app_videoenc_input_format(),
+			.width = width,
+			.height = height,
+			.type = VIDEO_BUF_TYPE_OUTPUT,
+		};
+
+		ret = video_set_compose_format(video_dev, &in_fmt);
+		if (ret != 0 ||
+		    in_fmt.size > (CONFIG_VIDEO_BUFFER_POOL_HEAP_SIZE /
+				   CONFIG_VIDEO_BUFFER_POOL_NUM_MAX)) {
+			LOG_WRN("Skipping format %ux%u", fmt.width, fmt.height);
+			return 0;
+		}
 	}
 
 	ret = uvc_device_add_format(uvc_dev, &fmt);
@@ -130,82 +167,101 @@ static struct video_resolution video_common_fmts[] = {
 	{ .width = 3840,	.height = 2160,	},	/* UHD */
 };
 
-/* Submit to UVC only the formats expected to be working (enough memory for the size, etc.) */
-static int app_add_filtered_formats(void)
+/* Submit the resolutions of a camera format capability, produced as pixfmt by uvc_src_dev */
+static int app_add_cap_formats(const struct device *uvc_src_dev, uint32_t pixfmt,
+			       const struct video_format_cap *vcap, bool has_sup_fmts)
 {
-	struct video_caps *uvc_src_caps = app_uvc_source_caps();
-	const bool has_sup_fmts = app_has_supported_format();
+	int count = 1;
 	int ret;
 
-	for (int i = 0; video_caps.format_caps[i].pixelformat != 0; i++) {
-		/*
-		 * FIXME - in the meantime that auto-negotiation is supported,
-		 * use the resolution list of the camera for NV12 pixelformat
-		 */
-		const struct video_format_cap *vcap = &video_caps.format_caps[i];
-		uint32_t pixelformat;
-		int count = 1;
+	ret = app_add_format(uvc_src_dev, pixfmt, vcap->width_min, vcap->height_min,
+			     has_sup_fmts);
+	if (ret != 0) {
+		return ret;
+	}
 
-		if (app_has_videoenc() && vcap->pixelformat != VIDEO_PIX_FMT_NV12) {
-			continue;
-		}
-
-		if (app_has_videoenc()) {
-			/*
-			 * FIXME - in the meantime that auto-negotiation is supported,
-			 * when a video encoder is present, always use the first pixelformat.
-			 */
-			pixelformat = uvc_src_caps->format_caps[0].pixelformat;
-			__ASSERT_NO_MSG(pixelformat != 0);
-		} else {
-			pixelformat = vcap->pixelformat;
-		}
-
-		ret = app_add_format(pixelformat, vcap->width_min, vcap->height_min,
+	if (vcap->width_min != vcap->width_max || vcap->height_min != vcap->height_max) {
+		ret = app_add_format(uvc_src_dev, pixfmt, vcap->width_max, vcap->height_max,
 				     has_sup_fmts);
 		if (ret != 0) {
 			return ret;
 		}
 
-		if (vcap->width_min != vcap->width_max || vcap->height_min != vcap->height_max) {
-			ret = app_add_format(pixelformat, vcap->width_max, vcap->height_max,
-					     has_sup_fmts);
-			if (ret != 0) {
-				return ret;
-			}
+		count++;
+	}
 
-			count++;
+	if (vcap->width_step == 0 && vcap->height_step == 0) {
+		return 0;
+	}
+
+	/* RANGE Resolution processing */
+	for (int j = 0; j < ARRAY_SIZE(video_common_fmts); j++) {
+		if (count >= CONFIG_APP_VIDEO_MAX_RESOLUTIONS) {
+			break;
 		}
 
-		if (vcap->width_step == 0 && vcap->height_step == 0) {
+		if (!IN_RANGE(video_common_fmts[j].width, vcap->width_min, vcap->width_max) ||
+		    !IN_RANGE(video_common_fmts[j].height, vcap->height_min, vcap->height_max)) {
 			continue;
 		}
 
-		/* RANGE Resolution processing */
-		for (int j = 0; j < ARRAY_SIZE(video_common_fmts); j++) {
-			if (count >= CONFIG_APP_VIDEO_MAX_RESOLUTIONS) {
-				break;
-			}
+		if ((video_common_fmts[j].width - vcap->width_min) % vcap->width_step ||
+		    (video_common_fmts[j].height - vcap->height_min) % vcap->height_step) {
+			continue;
+		}
 
-			if (!IN_RANGE(video_common_fmts[j].width,
-				      vcap->width_min, vcap->width_max) ||
-			    !IN_RANGE(video_common_fmts[j].height,
-				      vcap->height_min, vcap->height_max)) {
-				continue;
-			}
+		ret = app_add_format(uvc_src_dev, pixfmt, video_common_fmts[j].width,
+				     video_common_fmts[j].height, has_sup_fmts);
+		if (ret != 0) {
+			return ret;
+		}
 
-			if ((video_common_fmts[j].width - vcap->width_min) % vcap->width_step ||
-			    (video_common_fmts[j].height - vcap->height_min) % vcap->height_step) {
-				continue;
-			}
+		count++;
+	}
 
-			ret = app_add_format(pixelformat, video_common_fmts[j].width,
-					     video_common_fmts[j].height, has_sup_fmts);
-			if (ret != 0) {
-				return ret;
-			}
+	return 0;
+}
 
-			count++;
+/*
+ * Submit to UVC only the formats expected to be working (enough memory for the size, etc.):
+ * the formats of the camera, then those the encoder produces out of them, so that the
+ * host chooses between a raw and a compressed stream.
+ */
+static int app_add_filtered_formats(void)
+{
+	const uint32_t enc_in_fmt = app_has_videoenc() ? app_videoenc_input_format() : 0;
+	int ret;
+
+	for (int i = 0; video_caps.format_caps[i].pixelformat != 0; i++) {
+		const struct video_format_cap *vcap = &video_caps.format_caps[i];
+
+		ret = app_add_cap_formats(video_dev, vcap->pixelformat, vcap,
+					  app_has_supported_format(&video_caps));
+		if (ret != 0) {
+			return ret;
+		}
+	}
+
+	if (enc_in_fmt == 0) {
+		return 0;
+	}
+
+	for (int i = 0; video_caps.format_caps[i].pixelformat != 0; i++) {
+		const struct video_format_cap *vcap = &video_caps.format_caps[i];
+
+		if (vcap->pixelformat != enc_in_fmt) {
+			continue;
+		}
+
+		/*
+		 * FIXME - in the meantime that auto-negotiation is supported,
+		 * when a video encoder is present, always use the first pixelformat.
+		 */
+		ret = app_add_cap_formats(videoenc_dev,
+					  videoenc_out_caps.format_caps[0].pixelformat, vcap,
+					  app_has_supported_format(&videoenc_out_caps));
+		if (ret != 0) {
+			return ret;
 		}
 	}
 
@@ -224,6 +280,12 @@ static int app_init_videoenc(const struct device *const dev)
 	ret = video_get_caps(dev, &videoenc_out_caps);
 	if (ret != 0) {
 		LOG_ERR("Unable to retrieve video encoder output capabilities");
+		return ret;
+	}
+
+	ret = video_get_caps(dev, &videoenc_in_caps);
+	if (ret != 0) {
+		LOG_ERR("Unable to retrieve video encoder input capabilities");
 		return ret;
 	}
 
@@ -313,7 +375,7 @@ static int app_start_videoenc(const struct device *const dev)
 
 int main(void)
 {
-	const struct device *uvc_src_dev = app_uvc_source_dev();
+	const struct device *uvc_src_dev = app_has_videoenc() ? videoenc_dev : video_dev;
 	struct usbd_context *sample_usbd;
 	struct video_buffer *vbuf;
 	struct video_format fmt = {0};
@@ -340,9 +402,6 @@ int main(void)
 		if (ret != 0) {
 			return ret;
 		}
-
-		/* When using encoder, we split the VIDEO_BUFFER_POOL_NUM_MAX in 2 */
-		uvc_buf_count /= 2;
 	}
 
 	/* Initialize control descriptors from the video device */
@@ -397,13 +456,19 @@ int main(void)
 		VIDEO_FOURCC_TO_STR(fmt.pixelformat), fmt.width, fmt.height,
 		frmival.numerator, frmival.denominator);
 
-	if (app_has_videoenc()) {
-		/*
-		 * FIXME - this is currently hardcoded in NV12 while it should be
-		 * a format that has been validated for both video dev and encoder
-		 */
+	/* A raw format is sent as captured, an encoded one goes through the encoder */
+	use_videoenc = app_has_videoenc() && app_caps_have_format(&videoenc_out_caps,
+								  fmt.pixelformat);
+	uvc_src_dev = app_uvc_source_dev();
+
+	/* When using encoder, we split the VIDEO_BUFFER_POOL_NUM_MAX in 2 */
+	if (use_videoenc) {
+		uvc_buf_count /= 2;
+	}
+
+	if (use_videoenc) {
 		ret = app_configure_videoenc(videoenc_dev, fmt.width, fmt.height,
-					     VIDEO_PIX_FMT_NV12, fmt.pixelformat,
+					     app_videoenc_input_format(), fmt.pixelformat,
 					     CONFIG_VIDEO_BUFFER_POOL_NUM_MAX - uvc_buf_count);
 		if (ret != 0) {
 			return ret;
@@ -411,12 +476,8 @@ int main(void)
 	}
 
 	fmt.type = VIDEO_BUF_TYPE_OUTPUT;
-	if (app_has_videoenc()) {
-		/*
-		 * FIXME - this is currently hardcoded in NV12 while it should be
-		 * a format that has been validated for both video dev and encoder
-		 */
-		fmt.pixelformat = VIDEO_PIX_FMT_NV12;
+	if (use_videoenc) {
+		fmt.pixelformat = app_videoenc_input_format();
 	}
 
 	ret = video_set_compose_format(video_dev, &fmt);
@@ -472,9 +533,19 @@ int main(void)
 		return ret;
 	}
 
+	/* Frames captured by the camera have to be handed to the encoder as they come */
+	if (use_videoenc) {
+		ret = video_set_signal(video_dev, &sig);
+		if (ret != 0) {
+			LOG_WRN("Failed to setup the signal on %s output endpoint",
+				video_dev->name);
+			timeout = K_MSEC(1);
+		}
+	}
+
 	LOG_INF("Starting the video transfer");
 
-	if (app_has_videoenc()) {
+	if (use_videoenc) {
 		ret = app_start_videoenc(videoenc_dev);
 		if (ret != 0) {
 			return ret;
@@ -494,7 +565,7 @@ int main(void)
 			return ret;
 		}
 
-		if (app_has_videoenc()) {
+		if (use_videoenc) {
 			ret = video_transfer_buffer(video_dev, uvc_src_dev,
 						    VIDEO_BUF_TYPE_OUTPUT, VIDEO_BUF_TYPE_INPUT,
 						    K_NO_WAIT);
@@ -514,7 +585,7 @@ int main(void)
 			return ret;
 		}
 
-		if (app_has_videoenc()) {
+		if (use_videoenc) {
 			ret = video_transfer_buffer(uvc_src_dev, video_dev,
 						    VIDEO_BUF_TYPE_INPUT, VIDEO_BUF_TYPE_OUTPUT,
 						    K_NO_WAIT);
