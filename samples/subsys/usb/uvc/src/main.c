@@ -29,6 +29,10 @@ static struct video_caps videoenc_in_caps = {.type = VIDEO_BUF_TYPE_INPUT};
 /* Whether the format the host selected is produced by the encoder */
 static bool use_videoenc;
 
+/* Buffers allocated once, large enough for any format offered, and reused by every stream */
+static struct video_buffer *app_bufs[CONFIG_VIDEO_BUFFER_POOL_NUM_MAX];
+static size_t app_buf_size;
+
 #if DT_HAS_CHOSEN(zephyr_videoenc) && CONFIG_VIDEO_BUFFER_POOL_NUM_MAX < 2
 #error CONFIG_VIDEO_BUFFER_POOL_NUM_MAX must be >=2 in order to use a zephyr,videoenc
 #endif
@@ -103,6 +107,7 @@ static int app_add_format(const struct device *uvc_src_dev, uint32_t pixfmt, uin
 		.height = height,
 		.type = VIDEO_BUF_TYPE_OUTPUT,
 	};
+	size_t size;
 	int ret;
 
 	/* If the system has any standard pixel format, only propose them to the host */
@@ -123,6 +128,7 @@ static int app_add_format(const struct device *uvc_src_dev, uint32_t pixfmt, uin
 		LOG_WRN("Skipping format %ux%u", fmt.width, fmt.height);
 		return 0;
 	}
+	size = fmt.size;
 
 	/* An encoded stream also needs the camera frames it is made of to fit */
 	if (uvc_src_dev == videoenc_dev) {
@@ -140,12 +146,16 @@ static int app_add_format(const struct device *uvc_src_dev, uint32_t pixfmt, uin
 			LOG_WRN("Skipping format %ux%u", fmt.width, fmt.height);
 			return 0;
 		}
+		size = MAX(size, in_fmt.size);
 	}
 
 	ret = uvc_device_add_format(uvc_dev, &fmt);
 	if (ret == -ENOMEM) {
 		/* If there are too many formats, ignore the error, just list fewer formats */
 		return 0;
+	}
+	if (ret == 0) {
+		app_buf_size = MAX(app_buf_size, size);
 	}
 	return ret;
 }
@@ -302,13 +312,12 @@ static int app_init_videoenc(const struct device *const dev)
 static int app_configure_videoenc(const struct device *const dev,
 				  uint32_t width, uint32_t height,
 				  uint32_t sink_pixelformat, uint32_t source_pixelformat,
-				  uint32_t nb_buffer)
+				  struct video_buffer **bufs, uint32_t nb_buffer)
 {
 	struct video_format fmt = {
 		.width = width,
 		.height = height,
 	};
-	struct video_buffer *buf;
 	int ret;
 
 	/*
@@ -332,19 +341,12 @@ static int app_configure_videoenc(const struct device *const dev,
 		return ret;
 	}
 
-	LOG_INF("Preparing %u buffers of %u bytes for encoder output", nb_buffer, fmt.size);
+	LOG_INF("Enqueuing %u buffers for encoder output", nb_buffer);
 
 	for (int i = 0; i < nb_buffer; i++) {
-		buf = video_buffer_aligned_alloc(fmt.size, CONFIG_VIDEO_BUFFER_POOL_ALIGN,
-						 K_NO_WAIT);
-		if (buf == NULL) {
-			LOG_ERR("Could not allocate the encoder output buffer");
-			return -ENOMEM;
-		}
+		bufs[i]->type = VIDEO_BUF_TYPE_OUTPUT;
 
-		buf->type = VIDEO_BUF_TYPE_OUTPUT;
-
-		ret = video_enqueue(dev, buf);
+		ret = video_enqueue(dev, bufs[i]);
 		if (ret != 0) {
 			LOG_ERR("Could not enqueue video buffer");
 			return ret;
@@ -373,88 +375,19 @@ static int app_start_videoenc(const struct device *const dev)
 	return 0;
 }
 
-int main(void)
+/* Configure and start the pipeline for the format the host selected */
+static int app_start_stream(const struct video_format *host_fmt,
+			    struct video_frmival *frmival, struct k_poll_signal *sig,
+			    k_timeout_t *timeout)
 {
-	const struct device *uvc_src_dev = app_has_videoenc() ? videoenc_dev : video_dev;
-	struct usbd_context *sample_usbd;
-	struct video_buffer *vbuf;
-	struct video_format fmt = {0};
+	const struct device *uvc_src_dev;
+	struct video_format fmt = *host_fmt;
 	uint32_t uvc_buf_count = CONFIG_VIDEO_BUFFER_POOL_NUM_MAX;
-	struct video_frmival frmival = {0};
-	struct k_poll_signal sig;
-	struct k_poll_event evt[1];
-	k_timeout_t timeout = K_FOREVER;
 	int ret;
-
-	if (!device_is_ready(video_dev)) {
-		LOG_ERR("video source %s failed to initialize", video_dev->name);
-		return -ENODEV;
-	}
-
-	ret = video_get_caps(video_dev, &video_caps);
-	if (ret != 0) {
-		LOG_ERR("Unable to retrieve video capabilities");
-		return 0;
-	}
-
-	if (app_has_videoenc()) {
-		ret = app_init_videoenc(videoenc_dev);
-		if (ret != 0) {
-			return ret;
-		}
-	}
-
-	/* Initialize control descriptors from the video device */
-	uvc_device_init(uvc_dev, uvc_src_dev);
-
-	/* Fill the table of formats */
-	ret = app_add_filtered_formats();
-	if (ret != 0) {
-		return ret;
-	}
-
-	/* Prepare the UVC device for being run */
-	ret = uvc_device_enable(uvc_dev);
-	if (ret != 0) {
-		return ret;
-	}
-
-	sample_usbd = sample_usbd_init_device(NULL);
-	if (sample_usbd == NULL) {
-		return -ENODEV;
-	}
-
-	ret = usbd_enable(sample_usbd);
-	if (ret != 0) {
-		return ret;
-	}
-
-	LOG_INF("Waiting the host to select the video format");
-
-	while (true) {
-		fmt.type = VIDEO_BUF_TYPE_INPUT;
-
-		ret = video_get_format(uvc_dev, &fmt);
-		if (ret == 0) {
-			break;
-		}
-		if (ret != -EAGAIN) {
-			LOG_ERR("Failed to get the video format");
-			return ret;
-		}
-
-		k_sleep(K_MSEC(10));
-	}
-
-	ret = video_get_frmival(uvc_dev, &frmival);
-	if (ret != 0) {
-		LOG_ERR("Failed to get the video frame interval");
-		return ret;
-	}
 
 	LOG_INF("The host selected format '%s' %ux%u at frame interval %u/%u",
 		VIDEO_FOURCC_TO_STR(fmt.pixelformat), fmt.width, fmt.height,
-		frmival.numerator, frmival.denominator);
+		frmival->numerator, frmival->denominator);
 
 	/* A raw format is sent as captured, an encoded one goes through the encoder */
 	use_videoenc = app_has_videoenc() && app_caps_have_format(&videoenc_out_caps,
@@ -464,27 +397,26 @@ int main(void)
 	/* When using encoder, we split the VIDEO_BUFFER_POOL_NUM_MAX in 2 */
 	if (use_videoenc) {
 		uvc_buf_count /= 2;
-	}
 
-	if (use_videoenc) {
 		ret = app_configure_videoenc(videoenc_dev, fmt.width, fmt.height,
 					     app_videoenc_input_format(), fmt.pixelformat,
+					     &app_bufs[uvc_buf_count],
 					     CONFIG_VIDEO_BUFFER_POOL_NUM_MAX - uvc_buf_count);
 		if (ret != 0) {
 			return ret;
 		}
+
+		fmt.pixelformat = app_videoenc_input_format();
 	}
 
 	fmt.type = VIDEO_BUF_TYPE_OUTPUT;
-	if (use_videoenc) {
-		fmt.pixelformat = app_videoenc_input_format();
-	}
 
 	ret = video_set_compose_format(video_dev, &fmt);
 	if (ret != 0) {
 		LOG_ERR("Could not set the format of %s to %s %ux%u (size %u)",
 			video_dev->name, VIDEO_FOURCC_TO_STR(fmt.pixelformat),
 			fmt.width, fmt.height, fmt.size);
+		return ret;
 	}
 
 	/*
@@ -492,24 +424,15 @@ int main(void)
 	 * have frmival support for the time being so this is done directly
 	 * at camera level
 	 */
-	ret = video_set_frmival(video_dev, &frmival);
+	ret = video_set_frmival(video_dev, frmival);
 	if (ret != 0) {
 		LOG_WRN("Could not set the framerate of %s", video_dev->name);
 	}
 
-	LOG_INF("Preparing %u buffers of %u bytes", uvc_buf_count, fmt.size);
-
 	for (int i = 0; i < uvc_buf_count; i++) {
-		vbuf = video_buffer_aligned_alloc(fmt.size, CONFIG_VIDEO_BUFFER_POOL_ALIGN,
-						  K_NO_WAIT);
-		if (vbuf == NULL) {
-			LOG_ERR("Could not allocate the video buffer");
-			return -ENOMEM;
-		}
+		app_bufs[i]->type = VIDEO_BUF_TYPE_OUTPUT;
 
-		vbuf->type = VIDEO_BUF_TYPE_OUTPUT;
-
-		ret = video_enqueue(video_dev, vbuf);
+		ret = video_enqueue(video_dev, app_bufs[i]);
 		if (ret != 0) {
 			LOG_ERR("Could not enqueue video buffer");
 			return ret;
@@ -518,16 +441,15 @@ int main(void)
 
 	LOG_DBG("Preparing signaling for %s input/output", uvc_src_dev->name);
 
-	k_poll_signal_init(&sig);
-	k_poll_event_init(&evt[0], K_POLL_TYPE_SIGNAL, K_POLL_MODE_NOTIFY_ONLY, &sig);
+	*timeout = K_FOREVER;
 
-	ret = video_set_signal(uvc_src_dev, &sig);
+	ret = video_set_signal(uvc_src_dev, sig);
 	if (ret != 0) {
 		LOG_WRN("Failed to setup the signal on %s output endpoint", uvc_src_dev->name);
-		timeout = K_MSEC(1);
+		*timeout = K_MSEC(1);
 	}
 
-	ret = video_set_signal(uvc_dev, &sig);
+	ret = video_set_signal(uvc_dev, sig);
 	if (ret != 0) {
 		LOG_ERR("Failed to setup the signal on %s input endpoint", uvc_dev->name);
 		return ret;
@@ -535,15 +457,21 @@ int main(void)
 
 	/* Frames captured by the camera have to be handed to the encoder as they come */
 	if (use_videoenc) {
-		ret = video_set_signal(video_dev, &sig);
+		ret = video_set_signal(video_dev, sig);
 		if (ret != 0) {
 			LOG_WRN("Failed to setup the signal on %s output endpoint",
 				video_dev->name);
-			timeout = K_MSEC(1);
+			*timeout = K_MSEC(1);
 		}
 	}
 
 	LOG_INF("Starting the video transfer");
+
+	ret = video_stream_start(uvc_dev, VIDEO_BUF_TYPE_INPUT);
+	if (ret != 0) {
+		LOG_ERR("Failed to start %s", uvc_dev->name);
+		return ret;
+	}
 
 	if (use_videoenc) {
 		ret = app_start_videoenc(videoenc_dev);
@@ -558,8 +486,21 @@ int main(void)
 		return ret;
 	}
 
+	return 0;
+}
+
+/* Move frames along the pipeline until the host stops the stream or selects another format */
+static int app_run_stream(const struct video_format *host_fmt, struct k_poll_event *evt,
+			  struct k_poll_signal *sig, k_timeout_t timeout)
+{
+	const struct device *uvc_src_dev = app_uvc_source_dev();
+	/* Wake up regularly to notice a stream the host stopped */
+	const k_timeout_t wait = K_TIMEOUT_EQ(timeout, K_FOREVER) ? K_MSEC(100) : timeout;
+	struct video_format fmt;
+	int ret;
+
 	while (true) {
-		ret = k_poll(evt, ARRAY_SIZE(evt), timeout);
+		ret = k_poll(evt, 1, wait);
 		if (ret != 0 && ret != -EAGAIN) {
 			LOG_ERR("Poll exited with status %d", ret);
 			return ret;
@@ -605,7 +546,201 @@ int main(void)
 			return ret;
 		}
 
-		k_poll_signal_reset(&sig);
+		k_poll_signal_reset(sig);
+
+		fmt.type = VIDEO_BUF_TYPE_INPUT;
+		ret = video_get_format(uvc_dev, &fmt);
+		if (ret == -EAGAIN) {
+			LOG_INF("The host stopped the stream");
+			return 0;
+		}
+		if (ret == 0 && (fmt.pixelformat != host_fmt->pixelformat ||
+				 fmt.width != host_fmt->width || fmt.height != host_fmt->height)) {
+			LOG_INF("The host selected another format");
+			return 0;
+		}
+	}
+}
+
+/* Wait until the host stops the stream or selects a format other than fmt */
+static void app_wait_host_change(const struct video_format *fmt)
+{
+	struct video_format cur = {.type = VIDEO_BUF_TYPE_INPUT};
+
+	while (video_get_format(uvc_dev, &cur) == 0 && cur.pixelformat == fmt->pixelformat &&
+	       cur.width == fmt->width && cur.height == fmt->height) {
+		k_sleep(K_MSEC(100));
+	}
+}
+
+/* Stop the pipeline and gather all the buffers back */
+static int app_stop_stream(void)
+{
+	struct video_buffer *vbuf;
+	k_timepoint_t end = sys_timepoint_calc(K_SECONDS(1));
+	uint32_t count = 0;
+	int ret;
+
+	/* Stopping an endpoint also hands back the buffers queued in it */
+	video_stream_stop(video_dev, VIDEO_BUF_TYPE_OUTPUT);
+
+	if (use_videoenc) {
+		video_stream_stop(videoenc_dev, VIDEO_BUF_TYPE_INPUT);
+		video_stream_stop(videoenc_dev, VIDEO_BUF_TYPE_OUTPUT);
+	}
+
+	video_stream_stop(uvc_dev, VIDEO_BUF_TYPE_INPUT);
+
+	/* Buffers in a USB transfer come back once it completes or is aborted */
+	while (count < CONFIG_VIDEO_BUFFER_POOL_NUM_MAX && !sys_timepoint_expired(end)) {
+		const struct {
+			const struct device *dev;
+			enum video_buf_type type;
+		} ends[] = {
+			{video_dev, VIDEO_BUF_TYPE_OUTPUT},
+			{uvc_dev, VIDEO_BUF_TYPE_INPUT},
+			{videoenc_dev, VIDEO_BUF_TYPE_INPUT},
+			{videoenc_dev, VIDEO_BUF_TYPE_OUTPUT},
+		};
+		bool found = false;
+
+		for (int i = 0; i < ARRAY_SIZE(ends); i++) {
+			if (ends[i].dev == NULL) {
+				continue;
+			}
+
+			vbuf = &(struct video_buffer){.type = ends[i].type};
+			ret = video_dequeue(ends[i].dev, &vbuf, K_NO_WAIT);
+			if (ret == 0) {
+				count++;
+				found = true;
+			}
+		}
+
+		if (!found) {
+			k_sleep(K_MSEC(1));
+		}
+	}
+
+	if (count < CONFIG_VIDEO_BUFFER_POOL_NUM_MAX) {
+		LOG_ERR("Only %u of %u buffers came back", count, CONFIG_VIDEO_BUFFER_POOL_NUM_MAX);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+int main(void)
+{
+	const struct device *uvc_src_dev = app_has_videoenc() ? videoenc_dev : video_dev;
+	struct usbd_context *sample_usbd;
+	struct video_format fmt = {0};
+	struct video_frmival frmival = {0};
+	struct k_poll_signal sig;
+	struct k_poll_event evt[1];
+	k_timeout_t timeout;
+	bool failed;
+	int ret;
+
+	if (!device_is_ready(video_dev)) {
+		LOG_ERR("video source %s failed to initialize", video_dev->name);
+		return -ENODEV;
+	}
+
+	ret = video_get_caps(video_dev, &video_caps);
+	if (ret != 0) {
+		LOG_ERR("Unable to retrieve video capabilities");
+		return 0;
+	}
+
+	if (app_has_videoenc()) {
+		ret = app_init_videoenc(videoenc_dev);
+		if (ret != 0) {
+			return ret;
+		}
+	}
+
+	/* Initialize control descriptors from the video device */
+	uvc_device_init(uvc_dev, uvc_src_dev);
+
+	/* Fill the table of formats */
+	ret = app_add_filtered_formats();
+	if (ret != 0) {
+		return ret;
+	}
+
+	LOG_INF("Preparing %u buffers of %zu bytes", CONFIG_VIDEO_BUFFER_POOL_NUM_MAX,
+		app_buf_size);
+
+	for (int i = 0; i < ARRAY_SIZE(app_bufs); i++) {
+		app_bufs[i] = video_buffer_aligned_alloc(app_buf_size,
+							 CONFIG_VIDEO_BUFFER_POOL_ALIGN, K_NO_WAIT);
+		if (app_bufs[i] == NULL) {
+			LOG_ERR("Could not allocate the video buffer");
+			return -ENOMEM;
+		}
+	}
+
+	/* Prepare the UVC device for being run */
+	ret = uvc_device_enable(uvc_dev);
+	if (ret != 0) {
+		return ret;
+	}
+
+	sample_usbd = sample_usbd_init_device(NULL);
+	if (sample_usbd == NULL) {
+		return -ENODEV;
+	}
+
+	ret = usbd_enable(sample_usbd);
+	if (ret != 0) {
+		return ret;
+	}
+
+	k_poll_signal_init(&sig);
+	k_poll_event_init(&evt[0], K_POLL_TYPE_SIGNAL, K_POLL_MODE_NOTIFY_ONLY, &sig);
+
+	while (true) {
+		LOG_INF("Waiting the host to select the video format");
+
+		while (true) {
+			fmt.type = VIDEO_BUF_TYPE_INPUT;
+
+			ret = video_get_format(uvc_dev, &fmt);
+			if (ret == 0) {
+				break;
+			}
+			if (ret != -EAGAIN) {
+				LOG_ERR("Failed to get the video format");
+				return ret;
+			}
+
+			k_sleep(K_MSEC(10));
+		}
+
+		ret = video_get_frmival(uvc_dev, &frmival);
+		if (ret != 0) {
+			LOG_ERR("Failed to get the video frame interval");
+			return ret;
+		}
+
+		ret = app_start_stream(&fmt, &frmival, &sig, &timeout);
+		if (ret == 0) {
+			ret = app_run_stream(&fmt, evt, &sig, timeout);
+		}
+		failed = (ret != 0);
+
+		ret = app_stop_stream();
+		if (ret != 0) {
+			return ret;
+		}
+
+		/* Do not retry a format that failed until the host asks for it again */
+		if (failed) {
+			LOG_ERR("Could not stream '%s' %ux%u", VIDEO_FOURCC_TO_STR(fmt.pixelformat),
+				fmt.width, fmt.height);
+			app_wait_host_change(&fmt);
+		}
 	}
 
 	return 0;
