@@ -338,6 +338,7 @@ struct ov2640_ctrls {
 	struct video_ctrl saturation;
 	struct video_ctrl jpeg;
 	struct video_ctrl test_pattern;
+	struct video_ctrl pixel_rate;
 };
 
 struct ov2640_data {
@@ -768,6 +769,30 @@ uint8_t ov2640_check_connection(const struct device *dev)
 	return ret;
 }
 
+/* Reference clock the sensor rates are given for */
+#define OV2640_XVCLK MHZ(24)
+
+/* A compressed stream runs the sensor clock undivided, a raw one through the clock rate control */
+static uint8_t ov2640_clkrc(const struct device *dev, uint32_t pixelformat)
+{
+	const struct ov2640_config *cfg = dev->config;
+
+	return pixelformat == VIDEO_PIX_FMT_JPEG ? 0x00 : cfg->clock_rate_control;
+}
+
+/*
+ * Pixels per second on the eight bit output bus, which takes two clocks per pixel. The bus is
+ * clocked at the reference clock, which CLKRC[7] doubles and CLKRC[5:0] divides by one more
+ * than its value.
+ */
+static int64_t ov2640_pixel_rate(const struct device *dev, uint32_t pixelformat)
+{
+	uint8_t clkrc = ov2640_clkrc(dev, pixelformat);
+	int64_t pclk = (int64_t)OV2640_XVCLK * ((clkrc & BIT(7)) ? 2 : 1) / ((clkrc & 0x3f) + 1);
+
+	return pclk / 2;
+}
+
 /* Smallest buffer a compressed frame is given */
 #define OV2640_JPEG_MIN_SIZE 16384U
 
@@ -812,6 +837,7 @@ static int ov2640_set_fmt(const struct device *dev, struct video_format *fmt)
 			ret |= ov2640_set_resolution(dev, fmt->width, fmt->height,
 						     fmt->pixelformat);
 			ret |= ov2640_set_output_format(dev, fmt->pixelformat);
+			drv_data->ctrls.pixel_rate.val64 = ov2640_pixel_rate(dev, fmt->pixelformat);
 			return ret;
 		}
 		i++;
@@ -839,8 +865,7 @@ static int ov2640_get_fmt(const struct device *dev, struct video_format *fmt)
 static void ov2640_format_frmival(const struct device *dev, const struct video_format *fmt,
 				  struct video_frmival *frmival)
 {
-	const struct ov2640_config *cfg = dev->config;
-	uint8_t clkrc = fmt->pixelformat == VIDEO_PIX_FMT_JPEG ? 0x00 : cfg->clock_rate_control;
+	uint8_t clkrc = ov2640_clkrc(dev, fmt->pixelformat);
 	uint32_t fps;
 
 	if (fmt->width <= 400 && fmt->height <= 296) {
@@ -1000,8 +1025,18 @@ static int ov2640_init_controls(const struct device *dev)
 		return ret;
 	}
 
-	return video_init_ctrl(&ctrls->test_pattern, dev, VIDEO_CID_TEST_PATTERN,
-			       (struct video_ctrl_range){.min = 0, .max = 1, .step = 1, .def = 0});
+	ret = video_init_ctrl(&ctrls->test_pattern, dev, VIDEO_CID_TEST_PATTERN,
+			      (struct video_ctrl_range){.min = 0, .max = 1, .step = 1, .def = 0});
+	if (ret) {
+		return ret;
+	}
+
+	/* Between the reference clock divided by 64 and doubled */
+	return video_init_ctrl(&ctrls->pixel_rate, dev, VIDEO_CID_PIXEL_RATE,
+			       (struct video_ctrl_range){.min64 = OV2640_XVCLK / 64 / 2,
+							 .max64 = OV2640_XVCLK * 2 / 2,
+							 .step64 = 1,
+							 .def64 = OV2640_XVCLK / 2});
 }
 
 static int ov2640_init(const struct device *dev)
