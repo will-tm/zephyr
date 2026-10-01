@@ -1,0 +1,19 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Bouffalo Lab MJPEG encoder.
+
+  The encoder reads raw frames from memory and writes them back as JPEG images,
+  header included.
+
+compatible: "bflb,mjpeg"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true

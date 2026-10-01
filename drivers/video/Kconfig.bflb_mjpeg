@@ -1,0 +1,11 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config VIDEO_BFLB_MJPEG
+	bool "Bouffalo Lab MJPEG encoder"
+	default y
+	depends on DT_HAS_BFLB_MJPEG_ENABLED
+	select VIDEO_ENCODER_JPEG
+	help
+	  Enable the Bouffalo Lab MJPEG encoder, which compresses raw frames
+	  held in memory.
