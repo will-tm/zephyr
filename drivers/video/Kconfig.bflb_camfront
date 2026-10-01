@@ -1,0 +1,20 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config VIDEO_BFLB_CAMFRONT
+	bool "Bouffalo Lab camera front end"
+	default y
+	depends on DT_HAS_BFLB_CAMFRONT_ENABLED
+	select PINCTRL
+	help
+	  Enable the Bouffalo Lab camera front end, which receives the parallel
+	  bus of the sensor and drives its reference clock.
+
+config VIDEO_BFLB_CAMFRONT_CLOCK_INIT_PRIORITY
+	int "Camera front end clock and pin muxing initialization priority"
+	default 55
+	depends on VIDEO_BFLB_CAMFRONT
+	help
+	  Initialization priority of the sensor reference clock and the camera
+	  pins. It must be lower than VIDEO_INIT_PRIORITY so that the clock
+	  reaches the sensor before its own initialization talks to it.
