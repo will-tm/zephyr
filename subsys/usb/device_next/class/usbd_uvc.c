@@ -1997,7 +1997,58 @@ static void uvc_update(struct usbd_class_data *const c_data, const uint8_t iface
 	LOG_DBG("Select alternate %u for interface %u", alternate, iface);
 }
 
+/* Hand the video buffers not sent yet back to the application */
+static void uvc_return_queue(const struct device *dev, const bool aborted)
+{
+	struct uvc_data *data = dev->data;
+	struct video_buffer *vbuf;
+
+	k_mutex_lock(&data->mutex, K_FOREVER);
+
+	if (aborted) {
+		/* The USB transfers in progress were dropped along with the stream */
+		data->vbuf_offset = 0;
+		atomic_clear_bit(&data->state, UVC_STATE_STREAM_RESTART);
+	} else if (data->vbuf_offset != 0) {
+		/* The transfer cut short has to be terminated before the next one */
+		atomic_set_bit(&data->state, UVC_STATE_STREAM_RESTART);
+	}
+
+	while ((vbuf = k_fifo_get(&data->fifo_in, K_NO_WAIT)) != NULL) {
+		k_fifo_put(&data->fifo_out, vbuf);
+	}
+
+	k_mutex_unlock(&data->mutex);
+
+	if (IS_ENABLED(CONFIG_POLL) && data->video_sig != NULL) {
+		k_poll_signal_raise(data->video_sig, VIDEO_BUF_ABORTED);
+	}
+}
+
+static void uvc_feature_halt(struct usbd_class_data *const c_data, const uint8_t ep,
+			     const bool halted)
+{
+	const struct device *dev = usbd_class_get_private(c_data);
+	struct uvc_data *data = dev->data;
+
+	/* A host stops a bulk video stream by clearing the halt of its endpoint */
+	if (ep != uvc_get_bulk_in(dev) || halted) {
+		return;
+	}
+
+	LOG_INF("Host stopped the video stream");
+	atomic_clear_bit(&data->state, UVC_STATE_STREAM_READY);
+
+	/* Abort what a transfer started concurrently queued after the halt was cleared */
+	k_mutex_lock(&data->mutex, K_FOREVER);
+	usbd_ep_dequeue(usbd_class_get_ctx(c_data), ep);
+	k_mutex_unlock(&data->mutex);
+
+	uvc_return_queue(dev, true);
+}
+
 static const struct usbd_class_api uvc_class_api = {
+	.feature_halt = uvc_feature_halt,
 	.enable = uvc_enable,
 	.disable = uvc_disable,
 	.request = uvc_request,
@@ -2076,6 +2127,22 @@ static int uvc_set_stream(const struct device *dev, const bool enable,
 	return 0;
 }
 
+static int uvc_flush(const struct device *dev, const bool cancel)
+{
+	struct uvc_data *data = dev->data;
+
+	if (cancel) {
+		uvc_return_queue(dev, false);
+		return 0;
+	}
+
+	while (!k_fifo_is_empty(&data->fifo_in)) {
+		k_sleep(K_MSEC(1));
+	}
+
+	return 0;
+}
+
 #ifdef CONFIG_POLL
 static int uvc_set_signal(const struct device *dev, struct k_poll_signal *const sig)
 {
@@ -2093,6 +2160,7 @@ static DEVICE_API(video, uvc_video_api) = {
 	.set_stream = uvc_set_stream,
 	.enqueue = uvc_enqueue,
 	.dequeue = uvc_dequeue,
+	.flush = uvc_flush,
 #if CONFIG_POLL
 	.set_signal = uvc_set_signal,
 #endif
