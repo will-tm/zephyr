@@ -562,15 +562,27 @@ static int uvc_set_vs_probe(const struct device *dev, const struct net_buf *cons
 		return ret;
 	}
 
-	if (probe.bFrameIndex > max.bFrameIndex) {
-		LOG_WRN("The bFrameIndex %u requested is beyond the max %u",
-			probe.bFrameIndex, max.bFrameIndex);
-		return -ERANGE;
-	}
-
 	if (probe.bFormatIndex > max.bFormatIndex) {
 		LOG_WRN("The bFormatIndex %u requested is beyond the max %u",
 			probe.bFormatIndex, max.bFormatIndex);
+		return -ERANGE;
+	}
+
+	/* The frame index is one of the format requested, which may not be the current one */
+	if (probe.bFormatIndex != 0 && probe.bFormatIndex != data->format_id) {
+		uint8_t format_id = data->format_id;
+
+		data->format_id = probe.bFormatIndex;
+		ret = uvc_get_vs_probe_frame_index(dev, &max, UVC_GET_MAX);
+		data->format_id = format_id;
+		if (ret != 0) {
+			return ret;
+		}
+	}
+
+	if (probe.bFrameIndex > max.bFrameIndex) {
+		LOG_WRN("The bFrameIndex %u requested is beyond the max %u",
+			probe.bFrameIndex, max.bFrameIndex);
 		return -ERANGE;
 	}
 
