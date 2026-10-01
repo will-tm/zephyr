@@ -831,6 +831,58 @@ static int ov2640_get_fmt(const struct device *dev, struct video_format *fmt)
 	return 0;
 }
 
+/*
+ * Frame rate of the sensor mode a format is sent in, from a 24 MHz reference clock: the
+ * CIF, SVGA and UXGA modes each give half the rate of the previous one. A compressed
+ * stream runs the sensor clock undivided, a raw one through the clock rate control.
+ */
+static void ov2640_format_frmival(const struct device *dev, const struct video_format *fmt,
+				  struct video_frmival *frmival)
+{
+	const struct ov2640_config *cfg = dev->config;
+	uint8_t clkrc = fmt->pixelformat == VIDEO_PIX_FMT_JPEG ? 0x00 : cfg->clock_rate_control;
+	uint32_t fps;
+
+	if (fmt->width <= 400 && fmt->height <= 296) {
+		fps = 60;
+	} else if (fmt->width <= SVGA_WIDTH && fmt->height <= SVGA_HEIGHT) {
+		fps = 30;
+	} else {
+		fps = 15;
+	}
+
+	/* CLKRC[7] doubles the clock, CLKRC[5:0] divides it by one more than its value */
+	frmival->numerator = (clkrc & 0x3f) + 1;
+	frmival->denominator = (clkrc & BIT(7)) ? fps * 2 : fps;
+}
+
+static int ov2640_get_frmival(const struct device *dev, struct video_frmival *frmival)
+{
+	struct ov2640_data *drv_data = dev->data;
+
+	ov2640_format_frmival(dev, &drv_data->fmt, frmival);
+
+	return 0;
+}
+
+/* The rate follows from the format, so the only interval offered is the one it runs at */
+static int ov2640_set_frmival(const struct device *dev, struct video_frmival *frmival)
+{
+	return ov2640_get_frmival(dev, frmival);
+}
+
+static int ov2640_enum_frmival(const struct device *dev, struct video_frmival_enum *fie)
+{
+	if (fie->index > 0) {
+		return -EINVAL;
+	}
+
+	fie->type = VIDEO_FRMIVAL_TYPE_DISCRETE;
+	ov2640_format_frmival(dev, fie->format, &fie->discrete);
+
+	return 0;
+}
+
 static int ov2640_set_stream(const struct device *dev, bool enable, enum video_buf_type type)
 {
 	return 0;
@@ -882,6 +934,9 @@ static DEVICE_API(video, ov2640_driver_api) = {
 	.get_caps = ov2640_get_caps,
 	.set_stream = ov2640_set_stream,
 	.set_ctrl = ov2640_set_ctrl,
+	.set_frmival = ov2640_set_frmival,
+	.get_frmival = ov2640_get_frmival,
+	.enum_frmival = ov2640_enum_frmival,
 };
 
 static int ov2640_init_controls(const struct device *dev)
