@@ -803,6 +803,23 @@ config NET_BUF_DATA_SIZE
 	help
 	  This value tells what is the fixed size of each network buffer.
 
+config NET_BUF_DATA_ZEPHYR_REGION
+	bool "Place the network data buffers in a Zephyr memory-region"
+	depends on NET_BUF_FIXED_DATA_SIZE
+	help
+	  Place the data of the RX and TX network buffers in a region,
+	  automatically created from a 'zephyr,memory-region' compatible node,
+	  whose name is specified in CONFIG_NET_BUF_DATA_ZEPHYR_REGION_NAME.
+	  The region is not zeroed and only accessed once networking runs, so
+	  it can be backed by memory that is initialized late, such as PSRAM.
+
+config NET_BUF_DATA_ZEPHYR_REGION_NAME
+	string "Name of the Zephyr memory-region for the network data buffers"
+	depends on NET_BUF_DATA_ZEPHYR_REGION
+	help
+	  Name of the Zephyr memory-region where the network data buffers are
+	  placed.
+
 config NET_PKT_BUF_RX_DATA_POOL_SIZE
 	int "Size of the RX memory pool where buffers are allocated from"
 	default 4096 if NET_PKT_LARGE_DEFAULTS

@@ -1329,8 +1329,13 @@ extern const struct net_buf_data_cb net_buf_fixed_cb;
  * @param _destroy   Optional destroy callback when buffer is freed.
  */
 #define NET_BUF_POOL_FIXED_DEFINE(_name, _count, _data_size, _ud_size, _destroy) \
+	Z_NET_BUF_POOL_FIXED_DEFINE(_name, _count, _data_size, _ud_size, _destroy, __noinit)
+
+/** @cond INTERNAL_HIDDEN */
+/* As NET_BUF_POOL_FIXED_DEFINE, with the data payload placed by @p _data_attr */
+#define Z_NET_BUF_POOL_FIXED_DEFINE(_name, _count, _data_size, _ud_size, _destroy, _data_attr) \
 	_NET_BUF_ARRAY_DEFINE(_name, _count, _ud_size);                        \
-	static uint8_t __noinit net_buf_data_##_name[_count][_data_size] __net_buf_align; \
+	static uint8_t _data_attr net_buf_data_##_name[_count][_data_size] __net_buf_align; \
 	static const struct net_buf_pool_fixed net_buf_fixed_##_name = {       \
 		.data_pool = (uint8_t *)net_buf_data_##_name,                  \
 	};                                                                     \
@@ -1343,6 +1348,7 @@ extern const struct net_buf_data_cb net_buf_fixed_cb;
 		NET_BUF_POOL_INITIALIZER(_name, &net_buf_fixed_alloc_##_name,  \
 					 _net_buf_##_name, _count, _ud_size,   \
 					 _destroy)
+/** @endcond */
 
 /** @cond INTERNAL_HIDDEN */
 extern const struct net_buf_data_cb net_buf_var_cb;
