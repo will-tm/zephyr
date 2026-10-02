@@ -23,12 +23,21 @@
 #define MAX_STREAMS 2
 
 /* JPEG quantization scale of the sensor, lower is finer */
-#define JPEG_QS 12
+#define QS_MIN 5
+#define QS_MAX 63
+
+struct camera_settings {
+	int32_t stream_qs;
+	int32_t photo_qs;
+	/* Sensor levels, -2 to 2 */
+	int32_t contrast;
+	int32_t brightness;
+	int32_t saturation;
+};
 
 struct camera_stats {
 	uint32_t width;
 	uint32_t height;
-	uint32_t qs;
 	/* Over the last second */
 	uint32_t fps_x10;
 	uint32_t interval_us;
@@ -46,6 +55,9 @@ struct camera_stats {
 
 int camera_start(void);
 void camera_get_stats(struct camera_stats *stats);
+void camera_get_settings(struct camera_settings *settings);
+/* Apply settings from the camera thread, before its next frame */
+int camera_set_settings(const struct camera_settings *settings);
 
 /* Copy the next frame after *seq into buf, waiting for it up to timeout */
 int camera_frame_copy(uint8_t *buf, size_t size, size_t *len, uint32_t *seq, k_timeout_t timeout);

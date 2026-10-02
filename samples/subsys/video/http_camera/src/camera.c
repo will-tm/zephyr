@@ -10,6 +10,7 @@
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/video/video.h>
 
 #include "app.h"
@@ -39,6 +40,14 @@ static K_SEM_DEFINE(snap_done, 0, 1);
 
 static struct camera_stats stats;
 static K_MUTEX_DEFINE(stats_lock);
+
+static struct camera_settings settings = {
+	.stream_qs = 8,
+	.photo_qs = 5,
+};
+static struct camera_settings pending;
+static K_MUTEX_DEFINE(settings_lock);
+static atomic_t settings_dirty;
 
 /* Frame intervals of the second being measured */
 static struct {
@@ -112,17 +121,36 @@ static void publish(const struct video_buffer *vbuf)
 	k_mutex_unlock(&frame_lock);
 }
 
+static void set_ctrl(uint32_t id, int32_t val)
+{
+	struct video_control ctrl = {.id = id, .val = val};
+	int ret;
+
+	ret = video_set_ctrl(video_dev, &ctrl);
+	if (ret < 0) {
+		LOG_WRN("Cannot set control 0x%x to %d (%d)", id, val, ret);
+	}
+}
+
+static void apply_settings(void)
+{
+	k_mutex_lock(&settings_lock, K_FOREVER);
+	settings = pending;
+	k_mutex_unlock(&settings_lock);
+
+	/* The control holds the quantization scale itself */
+	set_ctrl(VIDEO_CID_JPEG_COMPRESSION_QUALITY, settings.stream_qs);
+	set_ctrl(VIDEO_CID_CONTRAST, settings.contrast);
+	set_ctrl(VIDEO_CID_BRIGHTNESS, settings.brightness);
+	set_ctrl(VIDEO_CID_SATURATION, settings.saturation);
+}
+
 /* Hold the exposure and gain of the stream, which the sensor carries over to the snapshot */
 static void set_auto_exposure(bool enable)
 {
-	struct video_control ctrl = {.val = enable ? 1 : 0};
-
-	ctrl.id = VIDEO_CID_EXPOSURE;
-	video_set_ctrl(video_dev, &ctrl);
-	ctrl.id = VIDEO_CID_GAIN;
-	video_set_ctrl(video_dev, &ctrl);
-	ctrl.id = VIDEO_CID_WHITE_BALANCE_TEMPERATURE;
-	video_set_ctrl(video_dev, &ctrl);
+	set_ctrl(VIDEO_CID_EXPOSURE, enable ? 1 : 0);
+	set_ctrl(VIDEO_CID_GAIN, enable ? 1 : 0);
+	set_ctrl(VIDEO_CID_WHITE_BALANCE_TEMPERATURE, enable ? 1 : 0);
 }
 
 static int take_snapshot(void)
@@ -131,9 +159,11 @@ static int take_snapshot(void)
 	int ret;
 
 	set_auto_exposure(false);
+	set_ctrl(VIDEO_CID_JPEG_COMPRESSION_QUALITY, settings.photo_qs);
 
 	ret = switch_size(SNAPSHOT_WIDTH, SNAPSHOT_HEIGHT);
 	if (ret < 0) {
+		set_ctrl(VIDEO_CID_JPEG_COMPRESSION_QUALITY, settings.stream_qs);
 		set_auto_exposure(true);
 		return ret;
 	}
@@ -158,6 +188,7 @@ static int take_snapshot(void)
 		LOG_ERR("Cannot restore the stream");
 	}
 
+	set_ctrl(VIDEO_CID_JPEG_COMPRESSION_QUALITY, settings.stream_qs);
 	set_auto_exposure(true);
 
 	return snap_len > 0 ? 0 : -EIO;
@@ -211,6 +242,10 @@ static void camera_run(void *p1, void *p2, void *p3)
 	struct video_buffer *vbuf;
 
 	for (;;) {
+		if (atomic_cas(&settings_dirty, 1, 0)) {
+			apply_settings();
+		}
+
 		if (k_sem_take(&snap_req, K_NO_WAIT) == 0) {
 			paused = k_uptime_get();
 			snap_ret = take_snapshot();
@@ -252,6 +287,29 @@ static void camera_run(void *p1, void *p2, void *p3)
 			next_log = sys_timepoint_calc(LOG_PERIOD);
 		}
 	}
+}
+
+void camera_get_settings(struct camera_settings *out)
+{
+	k_mutex_lock(&settings_lock, K_FOREVER);
+	*out = atomic_get(&settings_dirty) != 0 ? pending : settings;
+	k_mutex_unlock(&settings_lock);
+}
+
+int camera_set_settings(const struct camera_settings *in)
+{
+	if (!IN_RANGE(in->stream_qs, QS_MIN, QS_MAX) || !IN_RANGE(in->photo_qs, QS_MIN, QS_MAX) ||
+	    !IN_RANGE(in->contrast, -2, 2) || !IN_RANGE(in->brightness, -2, 2) ||
+	    !IN_RANGE(in->saturation, -2, 2)) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&settings_lock, K_FOREVER);
+	pending = *in;
+	atomic_set(&settings_dirty, 1);
+	k_mutex_unlock(&settings_lock);
+
+	return 0;
 }
 
 void camera_get_stats(struct camera_stats *out)
@@ -305,7 +363,6 @@ void camera_snapshot_release(void)
 
 int camera_start(void)
 {
-	struct video_control ctrl;
 	struct video_buffer *vbuf;
 	size_t size;
 	int ret;
@@ -344,17 +401,11 @@ int camera_start(void)
 		return ret;
 	}
 
-	/* The control holds the quantization scale itself, applied from now on */
-	ctrl.id = VIDEO_CID_JPEG_COMPRESSION_QUALITY;
-	ctrl.val = JPEG_QS;
-	ret = video_set_ctrl(video_dev, &ctrl);
-	if (ret < 0) {
-		LOG_WRN("Cannot set the JPEG quantization scale (%d)", ret);
-	}
+	pending = settings;
+	apply_settings();
 
 	stats.width = STREAM_WIDTH;
 	stats.height = STREAM_HEIGHT;
-	stats.qs = JPEG_QS;
 
 	ret = video_stream_start(video_dev, VIDEO_BUF_TYPE_OUTPUT);
 	if (ret < 0) {

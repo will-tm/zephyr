@@ -56,6 +56,16 @@
   .bar button:hover:not(:disabled) { background:var(--border); }
   .bar button:disabled { color:var(--subtle); border-color:var(--border); cursor:default; }
   .bar .mute { color:var(--muted); }
+  .bar label { display:flex; gap:6px; align-items:center; color:var(--muted); }
+  .bar select { font:inherit; font-size:11px; height:24px; padding:0 22px 0 8px; color:var(--fg);
+                background-color:var(--bg3); border:1px solid var(--border); border-radius:4px; cursor:pointer;
+                appearance:none; color-scheme:dark;
+                background-image:linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                                 linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+                background-position:calc(100% - 12px) 50%, calc(100% - 8px) 50%;
+                background-size:4px 4px; background-repeat:no-repeat; }
+  .bar select:hover { border-color:var(--muted); }
+  .bar select option { background:var(--bg2); color:var(--fg); }
 
   .chart { margin-bottom:10px; }
   .chart:last-child { margin-bottom:0; }
@@ -105,6 +115,13 @@
       <div class="bar">
         <button id="shot">Take picture</button>
         <span class="mute" id="shot-status">1600x1200, the stream pauses for about a second</span>
+      </div>
+      <div class="bar" id="settings">
+        <label>Stream QS <select id="set-stream_qs"></select></label>
+        <label>Photo QS <select id="set-photo_qs"></select></label>
+        <label>Contrast <select id="set-contrast"></select></label>
+        <label>Brightness <select id="set-brightness"></select></label>
+        <label>Saturation <select id="set-saturation"></select></label>
       </div>
     </div>
     <div class="card">
@@ -362,7 +379,8 @@ function tick() {
   if (dev) {
     $('tick').textContent = 'up ' + uptime(dev.uptime);
     setv('s-res', dev.width + 'x' + dev.height);
-    setv('s-qs', dev.qs + '<span class="unit">lower is finer</span>');
+    setv('s-qs', dev.stream_qs + '<span class="unit">/ ' + dev.photo_qs + ' photo</span>');
+    syncSettings(dev);
     setv('s-sfps', dev.fps.toFixed(1), dev.fps >= 25 ? 'ok' : 'warn');
     setv('d-uptime', uptime(dev.uptime));
     setv('d-rssi', dev.rssi + ' dBm', dev.rssi > -67 ? '' : 'bad');
@@ -431,6 +449,33 @@ $('shot').onclick = async () => {
   }
   b.disabled = false;
 };
+
+/* Settings, applied by the camera before its next frame */
+const QS = [5, 6, 8, 10, 12, 16, 20, 30];
+const LEVELS = [-2, -1, 0, 1, 2];
+const SETTINGS = { stream_qs:QS, photo_qs:QS, contrast:LEVELS, brightness:LEVELS, saturation:LEVELS };
+let editing = 0;
+
+for (const [k, values] of Object.entries(SETTINGS)) {
+  const sel = $('set-' + k);
+  for (const v of values) sel.add(new Option(v > 0 && values === LEVELS ? '+' + v : String(v), v));
+  sel.onchange = async () => {
+    editing++;
+    try {
+      const r = await fetch('/set?' + k + '=' + sel.value, { cache:'no-store' });
+      if (r.ok) syncSettings(await r.json(), true);
+    } catch (e) { /* the next poll shows the real value */ }
+    editing--;
+  };
+}
+
+function syncSettings(d, force) {
+  if (editing && !force) return;
+  for (const k of Object.keys(SETTINGS)) {
+    const sel = $('set-' + k);
+    if (document.activeElement !== sel || force) sel.value = d[k];
+  }
+}
 
 stream();
 poll();

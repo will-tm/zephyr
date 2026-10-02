@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/kernel.h>
@@ -87,8 +88,9 @@ static void serve_index(int fd)
 
 static void serve_stats(int fd)
 {
+	struct camera_settings cs;
 	struct camera_stats st;
-	char body[448];
+	char body[512];
 	char head[128];
 	uint32_t channel;
 	uint32_t phy;
@@ -96,19 +98,22 @@ static void serve_stats(int fd)
 	int len;
 
 	camera_get_stats(&st);
+	camera_get_settings(&cs);
 	wifi_get_status(&rssi, &phy, &channel);
 
 	len = snprintf(body, sizeof(body),
-		       "{\"uptime\":%u,\"width\":%u,\"height\":%u,\"qs\":%u,"
-		       "\"fps\":%u.%u,\"interval_us\":%u,\"jitter_us\":%u,"
+		       "{\"uptime\":%u,\"width\":%u,\"height\":%u,"
+		       "\"stream_qs\":%d,\"photo_qs\":%d,\"contrast\":%d,\"brightness\":%d,"
+		       "\"saturation\":%d,\"fps\":%u.%u,\"interval_us\":%u,\"jitter_us\":%u,"
 		       "\"frame_avg\":%u,\"frame_max\":%u,\"frames\":%u,\"bytes\":%u,"
 		       "\"dropped\":%u,\"snapshots\":%u,\"snap_size\":%u,\"snap_pause_ms\":%u,"
 		       "\"streams\":%d,\"sent\":%u,\"rssi\":%d,\"phy\":%u.%u,\"channel\":%u}",
-		       k_uptime_seconds(), st.width, st.height, st.qs, st.fps_x10 / 10,
-		       st.fps_x10 % 10, st.interval_us, st.jitter_us, st.frame_avg, st.frame_max,
-		       st.frames, st.bytes, st.dropped, st.snapshots, st.snap_size,
-		       st.snap_pause_ms, (int)atomic_get(&streams), (uint32_t)atomic_get(&sent),
-		       rssi, phy / 10, phy % 10, channel);
+		       k_uptime_seconds(), st.width, st.height, cs.stream_qs, cs.photo_qs,
+		       cs.contrast, cs.brightness, cs.saturation, st.fps_x10 / 10, st.fps_x10 % 10,
+		       st.interval_us, st.jitter_us, st.frame_avg, st.frame_max, st.frames,
+		       st.bytes, st.dropped, st.snapshots, st.snap_size, st.snap_pause_ms,
+		       (int)atomic_get(&streams), (uint32_t)atomic_get(&sent), rssi, phy / 10,
+		       phy % 10, channel);
 
 	snprintf(head, sizeof(head),
 		 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
@@ -117,6 +122,46 @@ static void serve_stats(int fd)
 	if (send_str(fd, head) == 0) {
 		send_all(fd, body, len);
 	}
+}
+
+/* Take the settings given as key=value pairs, the others stay as they are */
+static void serve_set(int fd, char *query)
+{
+	struct camera_settings cs;
+	char *pair;
+	char *save;
+	char *val;
+	int32_t v;
+
+	camera_get_settings(&cs);
+
+	for (pair = strtok_r(query, "&", &save); pair != NULL; pair = strtok_r(NULL, "&", &save)) {
+		val = strchr(pair, '=');
+		if (val == NULL) {
+			continue;
+		}
+		*val++ = '\0';
+		v = strtol(val, NULL, 10);
+
+		if (strcmp(pair, "stream_qs") == 0) {
+			cs.stream_qs = v;
+		} else if (strcmp(pair, "photo_qs") == 0) {
+			cs.photo_qs = v;
+		} else if (strcmp(pair, "contrast") == 0) {
+			cs.contrast = v;
+		} else if (strcmp(pair, "brightness") == 0) {
+			cs.brightness = v;
+		} else if (strcmp(pair, "saturation") == 0) {
+			cs.saturation = v;
+		}
+	}
+
+	if (camera_set_settings(&cs) < 0) {
+		send_status(fd, "400 Bad Request");
+		return;
+	}
+
+	serve_stats(fd);
 }
 
 static void serve_stream(int fd)
@@ -194,6 +239,7 @@ static void serve_snapshot(int fd)
 static void serve(int fd)
 {
 	char req[REQUEST_SIZE];
+	char *query = "";
 	size_t used = 0;
 	char *path;
 	char *end;
@@ -216,12 +262,18 @@ static void serve(int fd)
 	}
 
 	path = req + 4;
-	end = strpbrk(path, " ?\r\n");
+	end = strpbrk(path, " \r\n");
 	if (end == NULL) {
 		send_status(fd, "400 Bad Request");
 		return;
 	}
 	*end = '\0';
+
+	end = strchr(path, '?');
+	if (end != NULL) {
+		*end = '\0';
+		query = end + 1;
+	}
 
 	LOG_DBG("GET %s", path);
 
@@ -231,6 +283,8 @@ static void serve(int fd)
 		serve_stream(fd);
 	} else if (strcmp(path, "/stats") == 0) {
 		serve_stats(fd);
+	} else if (strcmp(path, "/set") == 0) {
+		serve_set(fd, query);
 	} else if (strcmp(path, "/snapshot.jpg") == 0) {
 		serve_snapshot(fd);
 	} else {
